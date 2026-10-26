@@ -212,6 +212,40 @@ function chooseCall(labels, pickedNumber) {
   return { step: "none", reason: "Call via your phone isn't in this menu" };
 }
 
+// Pick the note box, not search, email, or the task form.
+// A field already on the page needs a note label. One that just appeared can be blank.
+function scoreNoteField(item) {
+  const hint = norm(item.hint);
+  const around = norm(item.around);
+  if (/search|find a lead|find lead|password/.test(hint)) return -1;
+  const blob = `${hint} ${around}`;
+  const noteish = /\b(add a note|add note|save note|write a note|type a note|notes?)\b/.test(blob);
+  const other = /\b(subject|send an email|send email|add a task|add task|due date|log a call|log call)\b/.test(blob);
+  if (other && !noteish) return -1;
+  let score = 1;
+  if (item.fresh) score += 5;
+  if (/\bnotes?\b/.test(hint)) score += 6;
+  if (noteish) score += 3;
+  if (item.inDialog) score += 2;
+  if (item.height >= 48) score += 1;
+  if (!item.fresh && item.height > 320) score -= 4;
+  return score;
+}
+
+function chooseNoteField(candidates) {
+  let best = null;
+  let bestScore = 0;
+  for (const item of candidates) {
+    const score = scoreNoteField(item);
+    if (score < 4) continue;
+    if (!best || score > bestScore || (score === bestScore && item.height > best.height)) {
+      best = item;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
 // Sierra's own labels for opening a text. "Texts" is the phone-column link and
 // is only used on the lead's row, so a page-level Texts control is not enough.
 const TEXT_COMPOSE_LABELS = [
@@ -528,10 +562,156 @@ function install(doc, storage) {
     return ranked[0] ? ranked[0].el : null;
   }
 
+  function writingTargets() {
+    const selector = "textarea, [contenteditable], [role='textbox'], .ql-editor, .note-editable, .k-editable-area, .ProseMirror, iframe";
+    const found = [];
+    for (const el of doc.querySelectorAll(selector)) {
+      if (!visible(el) || el.closest("#sierra-keys-root, #sierra-keys-toast")) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 80 || rect.height < 20) continue;
+      if (el.matches("iframe")) {
+        const hint = `${el.id || ""} ${typeof el.className === "string" ? el.className : ""}`;
+        let body = null;
+        try {
+          body = el.contentDocument && el.contentDocument.body;
+        } catch (error) {
+          body = null;
+        }
+        if (!body) continue;
+        const editor = /editor|note|cke|mce|content/i.test(hint) || body.isContentEditable;
+        if (!editor) continue;
+        found.push({ focus: body, box: el });
+        continue;
+      }
+      const editable = el.matches("textarea") || el.isContentEditable || (el.getAttribute("role") || "") === "textbox";
+      const editorClass = el.matches(".ql-editor, .note-editable, .k-editable-area, .ProseMirror");
+      if (!editable && !editorClass) continue;
+      if (el.getAttribute("contenteditable") === "false" && !editorClass) continue;
+      found.push({ focus: el, box: el });
+    }
+    return found.filter((item) => !found.some((other) => other !== item && item.box.contains(other.box)));
+  }
+
+  function controlLabel(el) {
+    if (!el || !el.getAttribute) return "";
+    const id = el.id;
+    if (id && doc.querySelector) {
+      const label = doc.querySelector(`label[for="${CSS.escape(id)}"]`);
+      if (label) return label.innerText || label.textContent || "";
+    }
+    const wrapping = el.closest && el.closest("label");
+    return wrapping ? wrapping.innerText || wrapping.textContent || "" : "";
+  }
+
+  function noteContext(el) {
+    const dialog = el.closest("[role='dialog'], [role='alertdialog'], .modal, .k-window, .k-editor, .popover");
+    if (dialog) return dialog;
+    let node = el.parentElement;
+    let best = el.parentElement;
+    for (let depth = 0; node && depth < 6; depth += 1) {
+      const rect = node.getBoundingClientRect();
+      if (rect.width > 720 || rect.height > 560) break;
+      best = node;
+      node = node.parentElement;
+    }
+    return best;
+  }
+
+  function describeWriting(targets, before) {
+    return targets.map((item) => {
+      const el = item.focus;
+      const box = item.box;
+      const rect = box.getBoundingClientRect();
+      const hint = [
+        el.getAttribute && el.getAttribute("placeholder"),
+        el.getAttribute && el.getAttribute("data-placeholder"),
+        el.getAttribute && el.getAttribute("aria-placeholder"),
+        el.getAttribute && el.getAttribute("aria-label"),
+        el.getAttribute && el.getAttribute("title"),
+        el.getAttribute && el.getAttribute("name"),
+        el.id,
+        typeof el.className === "string" ? el.className : "",
+        typeof box.className === "string" ? box.className : "",
+        controlLabel(el),
+      ].filter(Boolean).join(" ");
+      const context = noteContext(box);
+      const around = ((context && (context.innerText || context.textContent)) || "").slice(0, 400);
+      return {
+        focus: el,
+        hint,
+        around,
+        fresh: !before.has(box),
+        inDialog: !!box.closest("[role='dialog'], [role='alertdialog'], .modal, .k-window"),
+        height: rect.height,
+      };
+    });
+  }
+
+  function focusWriting(el) {
+    const frame = el.ownerDocument && el.ownerDocument !== doc ? el.ownerDocument.defaultView.frameElement : null;
+    if (frame && typeof frame.focus === "function") frame.focus();
+    if (typeof el.focus === "function") el.focus();
+    if (typeof el.click === "function") el.click();
+    if (el.matches && el.matches("textarea, input")) {
+      const end = (el.value || "").length;
+      if (typeof el.setSelectionRange === "function") el.setSelectionRange(end, end);
+      return;
+    }
+    const view = el.ownerDocument && el.ownerDocument.defaultView;
+    const selection = view && view.getSelection && view.getSelection();
+    if (!selection || !el.ownerDocument || !el.ownerDocument.createRange) return;
+    const range = el.ownerDocument.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  function waitForNoteField(before) {
+    const current = () => chooseNoteField(describeWriting(writingTargets(), before));
+    const existing = current();
+    if (existing) return Promise.resolve(existing);
+    return new Promise((resolve) => {
+      const view = doc.defaultView;
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        observer.disconnect();
+        view.clearTimeout(timer);
+        resolve(current());
+      };
+      const observer = new view.MutationObserver(() => {
+        if (current()) finish();
+      });
+      observer.observe(doc.body, { childList: true, subtree: true, attributes: true });
+      const timer = view.setTimeout(finish, 700);
+    });
+  }
+
+  async function focusOpenedNote(before) {
+    const field = await waitForNoteField(before);
+    if (!field) {
+      toast("The note box isn't on this page");
+      return;
+    }
+    focusWriting(field.focus);
+  }
+
   async function openRecord(action) {
+    const note = action.id === "note";
+    const before = note ? new Set(writingTargets().map((item) => item.box)) : null;
+    if (note) {
+      const open = chooseNoteField(describeWriting(writingTargets(), before));
+      if (open) {
+        focusWriting(open.focus);
+        return;
+      }
+    }
     const direct = findClickable(action.labels);
     if (direct) {
       clickEl(direct);
+      if (note) await focusOpenedNote(before);
       return;
     }
     const row = currentRow();
@@ -545,6 +725,7 @@ function install(doc, storage) {
       const el = await waitForClickable(action.labels);
       if (el) {
         clickEl(el);
+        if (note) await focusOpenedNote(before);
         return;
       }
     }
@@ -1309,6 +1490,24 @@ if (typeof process !== "undefined" && process.argv && process.argv.includes("--s
   check("two bare numbers wait", twoBare.step, "none");
   const toastLabel = chooseCall(["Call via your phone isn't in this menu"], false);
   check("toast is not a phone", toastLabel.step, "none");
+  const notePick = chooseNoteField([
+    { id: "search", hint: "Search leads", around: "", fresh: false, inDialog: false, height: 32 },
+    { id: "note", hint: "Add a note", around: "Save note", fresh: true, inDialog: true, height: 80 },
+  ]);
+  check("note box", notePick && notePick.id, "note");
+  const emailBox = chooseNoteField([
+    { id: "subject", hint: "Subject", around: "Send an email", fresh: true, inDialog: true, height: 40 },
+  ]);
+  check("email is not a note", emailBox, null);
+  const freshComposer = chooseNoteField([
+    { id: "log", hint: "", around: "Notes", fresh: false, inDialog: false, height: 500 },
+    { id: "composer", hint: "", around: "", fresh: true, inDialog: false, height: 90 },
+  ]);
+  check("fresh note composer", freshComposer && freshComposer.id, "composer");
+  const idleNote = chooseNoteField([
+    { id: "other", hint: "", around: "", fresh: false, inDialog: false, height: 80 },
+  ]);
+  check("closed note waits", idleNote, null);
   if (failures.length) {
     console.error(failures.join("\n"));
     process.exit(1);
