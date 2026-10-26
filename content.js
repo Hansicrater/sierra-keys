@@ -55,6 +55,13 @@ const ACTIONS = [
     kind: "text",
   },
   {
+    id: "send-text",
+    label: "Send drafted text",
+    chord: "Alt+Enter",
+    site: "admin",
+    kind: "send-text",
+  },
+  {
     id: "call",
     label: "Log a call",
     chord: "Alt+Shift+KeyC",
@@ -130,7 +137,7 @@ function eventToChord(event) {
   if (event.ctrlKey) parts.push("Ctrl");
   if (event.altKey) parts.push("Alt");
   if (event.shiftKey) parts.push("Shift");
-  parts.push(event.code);
+  parts.push(event.code === "NumpadEnter" ? "Enter" : event.code);
   return parts.join("+");
 }
 
@@ -203,6 +210,27 @@ const TEXT_COMPOSE_LABELS = [
 
 function isTextComposeLabel(text) {
   return TEXT_COMPOSE_LABELS.includes(norm(text));
+}
+
+// The composer button is "Send". "Send Text Message" only opens the composer.
+function isTextSubmitLabel(text) {
+  const label = norm(text);
+  return label === "send" || label === "send message" || label === "send sms";
+}
+
+// Send only when this box is a text and the draft is non-empty.
+// An email composer, or a page that shows both, does not send.
+function chooseTextSend(names, fieldHint, draft) {
+  const blob = norm([...(names || []), fieldHint || ""].join(" "));
+  const textish = /\b(?:text messages?|sms|schedule text|text msg|send text|mass text|group text|emoji)\b/.test(blob);
+  const emailish = /\b(?:subject|send an? email|schedule email|email subject)\b/.test(blob);
+  const hasSend = (names || []).some(isTextSubmitLabel);
+  if (emailish && !textish) return { step: "none", reason: "That's an email, not a text" };
+  if (!textish) return { step: "none", reason: "Open a text first" };
+  if (emailish) return { step: "none", reason: "Send isn't clearly a text" };
+  if (!String(draft || "").replace(/\u00a0/g, " ").trim()) return { step: "none", reason: "Draft a text first" };
+  if (!hasSend) return { step: "none", reason: "Send isn't on this text" };
+  return { step: "send" };
 }
 
 const ARROW_DIRECTIONS = {
@@ -608,6 +636,80 @@ function install(doc, storage) {
     toast(row || opener ? "That action isn't on this page" : "Open a lead first");
   }
 
+  function fieldDraft(field) {
+    if (!field) return "";
+    if (field.matches("input, textarea")) return field.value || "";
+    return field.textContent || "";
+  }
+
+  function fieldHint(field) {
+    return [
+      field.getAttribute("placeholder"),
+      field.getAttribute("aria-label"),
+      field.getAttribute("title"),
+      field.getAttribute("name"),
+    ].join(" ");
+  }
+
+  function draftControl(target) {
+    const field = target && target.closest && target.closest("textarea, input, [contenteditable='true'], [contenteditable='']");
+    if (!field || field.closest("#sierra-keys-root, #sierra-keys-toast")) return null;
+    if (field.matches("input")) {
+      const type = (field.getAttribute("type") || "text").toLowerCase();
+      if (["button", "checkbox", "radio", "submit", "reset", "file", "hidden", "image", "range", "color"].includes(type)) return null;
+    }
+    return field;
+  }
+
+  function composerNames(root) {
+    const names = [];
+    const selector = "button, a[href], [role='button'], input[type='button'], input[type='submit'], h1, h2, h3, h4, label, legend";
+    for (const el of root.querySelectorAll(selector)) {
+      if (!visible(el) || el.closest("#sierra-keys-root, #sierra-keys-toast")) continue;
+      const name = accessibleName(el);
+      if (name) names.push(name);
+    }
+    return names;
+  }
+
+  function submitButtons(root) {
+    const selector = "button, [role='button'], input[type='button'], input[type='submit']";
+    return [...root.querySelectorAll(selector)].filter((el) => {
+      if (!visible(el) || el.closest("#sierra-keys-root, #sierra-keys-toast")) return false;
+      if (el.disabled || el.getAttribute("aria-disabled") === "true") return false;
+      return isTextSubmitLabel(accessibleName(el));
+    });
+  }
+
+  function sendDraftedText() {
+    const field = draftControl(doc.activeElement);
+    if (!field) {
+      toast("Open a text first");
+      return;
+    }
+    let node = field;
+    while (node && node !== doc.documentElement) {
+      const decision = chooseTextSend(composerNames(node), fieldHint(field), fieldDraft(field));
+      const stop = node === doc.body;
+      if (decision.step === "send") {
+        const buttons = submitButtons(node);
+        if (buttons.length !== 1) {
+          toast(buttons.length ? "Send isn't clearly a text" : "Send isn't on this text");
+          return;
+        }
+        clickEl(buttons[0]);
+        return;
+      }
+      if (decision.reason !== "Open a text first" && decision.reason !== "Send isn't on this text") {
+        toast(decision.reason);
+        return;
+      }
+      if (stop) break;
+      node = node.parentElement;
+    }
+    toast("Open a text first");
+  }
+
   function closeOverlay() {
     rebindId = null;
     const root = doc.getElementById("sierra-keys-root");
@@ -833,6 +935,7 @@ function install(doc, storage) {
     if (action.kind === "record") return openRecord(action);
     if (action.kind === "dial") return openDial();
     if (action.kind === "text") return openText();
+    if (action.kind === "send-text") return sendDraftedText();
   }
 
   doc.addEventListener("pointermove", (event) => {
@@ -1001,6 +1104,17 @@ if (typeof process !== "undefined" && process.argv && process.argv.includes("--s
   check("text msg", isTextComposeLabel("Text Msg"), true);
   check("email is not a text", isTextComposeLabel("Send an email"), false);
   check("texts link is not compose", isTextComposeLabel("Texts"), false);
+  check("alt enter", eventToChord({ code: "Enter", altKey: true, shiftKey: false, ctrlKey: false }), "Alt+Enter");
+  check("numpad enter", eventToChord({ code: "NumpadEnter", altKey: true, shiftKey: false, ctrlKey: false }), "Alt+Enter");
+  check("send text chord free", rejectChord("Alt+Enter"), null);
+  check("send is the text button", isTextSubmitLabel("Send"), true);
+  check("opener is not send", isTextSubmitLabel("Send Text Message"), false);
+  const textBox = ["Schedule Text", "Send"];
+  check("drafted text sends", chooseTextSend(textBox, "", "On my way").step, "send");
+  check("empty text waits", chooseTextSend(textBox, "", "  ").reason, "Draft a text first");
+  check("email is refused", chooseTextSend(["Subject", "Send"], "", "Hello").reason, "That's an email, not a text");
+  check("plain note waits", chooseTextSend(["Save note"], "note", "Hello").reason, "Open a text first");
+  check("mixed composer waits", chooseTextSend(["Subject", "Schedule Text", "Send"], "", "Hello").reason, "Send isn't clearly a text");
   const connectedOnly = chooseCall(["Call via Browser", "Call via (555) 010-0000"], false);
   check("one connected", `${connectedOnly.step}:${connectedOnly.label}`, "dial:call via (555) 010-0000");
   const pickPersonal = chooseCall(["Call via Browser", "Call via (555) 010-0000", "Personal Number"], false);
