@@ -240,6 +240,26 @@ const ARROW_DIRECTIONS = {
   ArrowRight: "right",
 };
 
+function isLeadProfilePath(path) {
+  return /lead-detail|leaddetail|lead_detail|leadprofile|lead-profile|viewlead/.test(String(path || "").toLowerCase());
+}
+
+// The lead profile uses a phone icon, often with no text. A phone number on
+// that page is the same control. Dashboard rows still have to be hovered.
+function phoneOpenerScore(hint, href) {
+  const blob = norm(hint);
+  const link = String(href || "").toLowerCase();
+  if (!blob && !link.startsWith("tel:")) return 0;
+  if (/log a call|log call|add to call|text message|send text|call list|call via|phone status|header phone/.test(blob)) return 0;
+  if (link.startsWith("tel:")) return 5;
+  if (blob === "call" || blob === "phone" || blob === "call lead" || blob === "click to call") return 5;
+  if (/^[\d\s().+-]{7,}$/.test(blob) && blob.replace(/\D/g, "").length >= 7) return 4;
+  if (/\b(fa-phone|glyphicon-earphone|glyphicon-phone|icon-phone|phone-icon|btn-call|call-btn|dialer)\b/.test(blob)) return 4;
+  if (/\b(phone|dial|dialer)\b/.test(blob) && !/status/.test(blob)) return 4;
+  if (/\bcall\b/.test(blob) && !/\b(logged|history|via|list|widget|back)\b/.test(blob)) return 3;
+  return 0;
+}
+
 function isLeadNameCandidate(href, text, className) {
   const label = norm(text);
   if (!label || label.length > 80) return false;
@@ -516,20 +536,40 @@ function install(doc, storage) {
     toast(row || opener ? "That action isn't on this page" : "Open a lead first");
   }
 
-  function findPhone(root) {
-    const ranked = [];
-    for (const el of candidates(root)) {
-      if (!visible(el)) continue;
-      if (el.closest("#sierra-keys-root, #sierra-keys-toast")) continue;
-      const blob = norm(`${accessibleName(el)} ${el.getAttribute("title") || ""}`);
-      if (/log a call|log call|add to call|text message|send text|call list|call via/.test(blob)) continue;
-      let score = 0;
-      if (blob === "call" || blob === "phone" || blob === "call lead") score += 5;
-      if (/\bphone\b/.test(blob) && !/status/.test(blob)) score += 3;
-      if (score > 0) ranked.push({ el, score });
+  function phoneHint(el) {
+    const bits = [
+      accessibleName(el),
+      el.getAttribute("title"),
+      el.getAttribute("aria-label"),
+      el.id,
+      typeof el.className === "string" ? el.className : "",
+    ];
+    for (const icon of el.querySelectorAll("i, svg, img")) {
+      bits.push(icon.getAttribute("title"), icon.getAttribute("aria-label"), icon.getAttribute("alt"));
+      bits.push(typeof icon.className === "string" ? icon.className : "");
     }
-    ranked.sort((a, b) => b.score - a.score);
-    return ranked[0] ? ranked[0].el : null;
+    return bits.filter(Boolean).join(" ");
+  }
+
+  function findPhone(root) {
+    const selector = "a, button, [role='button'], [role='link'], [role='menuitem'], summary, [onclick], i, svg, img";
+    const ranked = new Map();
+    for (const el of root.querySelectorAll(selector)) {
+      if (!visible(el)) continue;
+      if (el.closest("#sierra-keys-root, #sierra-keys-toast, nav, [role='banner'], [role='navigation']")) continue;
+      const score = phoneOpenerScore(phoneHint(el), el.getAttribute("href") || "");
+      if (score <= 0) continue;
+      const target = el.closest("a, button, [role='button'], [role='link'], [onclick]") || el;
+      const rect = target.getBoundingClientRect();
+      if (rect.width > 240 || rect.height > 80 || rect.width < 8 || rect.height < 8) continue;
+      const previous = ranked.get(target);
+      if (!previous || score > previous.score || (score === previous.score && rect.top < previous.top)) {
+        ranked.set(target, { el: target, score, top: rect.top });
+      }
+    }
+    const matches = [...ranked.values()];
+    matches.sort((a, b) => b.score - a.score || a.top - b.top);
+    return matches[0] ? matches[0].el : null;
   }
 
   function visibleLabels() {
@@ -581,9 +621,11 @@ function install(doc, storage) {
 
   async function openDial() {
     const row = currentRow();
-    const opener = findPhone(row || doc.body);
+    const profile = isLeadProfilePath(`${doc.defaultView.location.pathname}${doc.defaultView.location.search}`);
+    let opener = row ? findPhone(row) : null;
+    if (!opener && profile) opener = findPhone(doc.body);
     if (!opener) {
-      toast(row ? "That action isn't on this page" : "Open a lead first");
+      toast(profile || row ? "That action isn't on this page" : "Open a lead first");
       return;
     }
     clickEl(opener);
@@ -1052,6 +1094,13 @@ if (typeof process !== "undefined" && process.argv && process.argv.includes("--s
   check("lead name href", isLeadNameCandidate("lead-detail.aspx?id=1", "Ada Lovelace", ""), true);
   check("menu is not a lead", isLeadNameCandidate("lead-detail.aspx", "Leads Dashboard", "lead-name"), false);
   check("plain link is not a lead", isLeadNameCandidate("/settings.aspx", "Ada Lovelace", ""), false);
+  check("lead profile path", isLeadProfilePath("/lead-detail.aspx?id=1"), true);
+  check("dashboard is not a profile", isLeadProfilePath("/leads.aspx"), false);
+  check("call button", phoneOpenerScore("Call", ""), 5);
+  check("phone icon", phoneOpenerScore("fa-phone", ""), 4);
+  check("profile number", phoneOpenerScore("(555) 010-0000", ""), 4);
+  check("log a call is not the dialer", phoneOpenerScore("Log a call", ""), 0);
+  check("call via is the menu", phoneOpenerScore("Call via Browser", ""), 0);
   check("bulk actions label", isSheetToolbarLabel("Bulk Actions"), true);
   check("sort by label", isSheetToolbarLabel("Sort by"), true);
   check("agents label", isSheetToolbarLabel("Agents"), true);
