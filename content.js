@@ -272,6 +272,40 @@ function chooseTaskTarget(candidates) {
   return best;
 }
 
+// The description box belongs to the task menu that just opened.
+function scoreDescriptionField(item) {
+  const hint = norm(item.hint);
+  const label = norm(item.label);
+  if (/search|password|subject|email/.test(hint) && !/description/.test(`${hint} ${label}`)) return -1;
+  const own = `${label} ${hint}`.trim();
+  const named = /(^|\s)description\b/.test(label) || hint === "description" || /^description\b/.test(hint);
+  const hinted = /\bdescription\b/.test(own);
+  const nearby = /\bdescription\b/.test(norm(item.around));
+  if (!named && !hinted && !nearby) return -1;
+  if (!item.fresh && !item.inMenu) return -1;
+  let score = 1;
+  if (named) score += 8;
+  else if (hinted) score += 5;
+  else score += 2;
+  if (item.fresh) score += 5;
+  if (item.inMenu) score += 3;
+  return score;
+}
+
+function chooseDescriptionField(candidates) {
+  let best = null;
+  let bestScore = 0;
+  for (const item of candidates) {
+    const score = scoreDescriptionField(item);
+    if (score < 4) continue;
+    if (!best || score > bestScore) {
+      best = item;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
 function chooseNoteField(candidates) {
   let best = null;
   let bestScore = 0;
@@ -601,13 +635,92 @@ function install(doc, storage) {
     return found;
   }
 
-  function openTasks() {
+  function descriptionFields() {
+    const selector = "textarea, input, [contenteditable='true'], [contenteditable=''], [role='textbox']";
+    const found = [];
+    for (const el of doc.querySelectorAll(selector)) {
+      if (!visible(el) || el.closest("#sierra-keys-root, #sierra-keys-toast")) continue;
+      if (el.matches("input")) {
+        const type = (el.getAttribute("type") || "text").toLowerCase();
+        if (["button", "checkbox", "radio", "submit", "reset", "file", "hidden", "image", "range", "color", "date", "datetime-local", "time", "number"].includes(type)) continue;
+      }
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 40 || rect.height < 12) continue;
+      found.push(el);
+    }
+    return found;
+  }
+
+  function descriptionLabel(el) {
+    const labelled = controlLabel(el).replace(/\s+/g, " ").trim();
+    if (labelled && labelled.length <= 40) return labelled;
+    const prev = el.previousElementSibling;
+    const text = prev ? (prev.innerText || prev.textContent || "").replace(/\s+/g, " ").trim() : "";
+    return text.length <= 40 ? text : "";
+  }
+
+  function describeDescription(fields, before) {
+    return fields.map((el) => {
+      const menu = el.closest("[role='menu'], [role='dialog'], [role='listbox'], .dropdown-menu, .popover, .modal, .k-window, .k-animation-container");
+      const context = menu || el.parentElement;
+      return {
+        focus: el,
+        hint: [
+          el.getAttribute("placeholder"),
+          el.getAttribute("aria-label"),
+          el.getAttribute("title"),
+          el.getAttribute("name"),
+          el.id,
+        ].filter(Boolean).join(" "),
+        label: descriptionLabel(el),
+        around: ((context && (context.innerText || context.textContent)) || "").slice(0, 180),
+        fresh: !before.has(el),
+        inMenu: !!menu,
+      };
+    });
+  }
+
+  function waitForDescription(before) {
+    const current = () => chooseDescriptionField(describeDescription(descriptionFields(), before));
+    if (current()) return Promise.resolve(current());
+    return new Promise((resolve) => {
+      const view = doc.defaultView;
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        observer.disconnect();
+        view.clearTimeout(timer);
+        resolve(current());
+      };
+      const observer = new view.MutationObserver(() => {
+        if (current()) finish();
+      });
+      observer.observe(doc.body, { childList: true, subtree: true, attributes: true });
+      const timer = view.setTimeout(finish, 800);
+    });
+  }
+
+  async function openTasks() {
+    const showing = descriptionFields();
+    const before = new Set(showing);
+    const already = chooseDescriptionField(describeDescription(showing, before));
+    if (already) {
+      focusWriting(already.focus);
+      return;
+    }
     const target = chooseTaskTarget(taskCandidates());
     if (!target) {
       toast("That page isn't in the menu here");
       return;
     }
     clickEl(target.el);
+    const field = await waitForDescription(before);
+    if (!field) {
+      toast("The description box isn't in this menu");
+      return;
+    }
+    focusWriting(field.focus);
   }
 
   function currentRow() {
@@ -1605,6 +1718,20 @@ if (typeof process !== "undefined" && process.argv && process.argv.includes("--s
     { id: "manager", name: "Go to Task Manager", inHeader: true, isTab: false },
   ]);
   check("tasks badge", taskBadge && taskBadge.id, "badge");
+  const descriptionBox = chooseDescriptionField([
+    { id: "search", hint: "Search leads", label: "", around: "", fresh: true, inMenu: false },
+    { id: "old", hint: "", label: "Description", around: "", fresh: false, inMenu: false },
+    { id: "box", hint: "", label: "Description", around: "Tasks", fresh: true, inMenu: true },
+  ]);
+  check("description box", descriptionBox && descriptionBox.id, "box");
+  const openDescription = chooseDescriptionField([
+    { id: "open", hint: "Description", label: "Description", around: "", fresh: false, inMenu: true },
+  ]);
+  check("open description", openDescription && openDescription.id, "open");
+  const pageDescription = chooseDescriptionField([
+    { id: "page", hint: "", label: "Description", around: "", fresh: false, inMenu: false },
+  ]);
+  check("page description waits", pageDescription, null);
   if (failures.length) {
     console.error(failures.join("\n"));
     process.exit(1);
