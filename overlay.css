@@ -1,0 +1,113 @@
+#sierra-keys-root,
+#sierra-keys-root * {
+  box-sizing: border-box;
+  color: #000 !important;
+}
+
+#sierra-keys-root {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 2147483646;
+  width: 380px;
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  padding: 14px 14px 12px;
+  border: 1px solid #d6d3d1;
+  border-radius: 12px;
+  background: #fffdf8;
+  color: #1c1917;
+  box-shadow: 0 16px 40px rgba(28, 25, 23, 0.18);
+  font: 13px/1.45 ui-sans-serif, system-ui, sans-serif;
+}
+
+#sierra-keys-root h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+#sierra-keys-root p {
+  margin: 4px 0 0;
+  color: #57534e;
+}
+
+#sierra-keys-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+#sierra-keys-root button {
+  font: inherit;
+  color: inherit;
+  background: #f5f5f4;
+  border: 1px solid #d6d3d1;
+  border-radius: 8px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+#sierra-keys-root button:hover,
+#sierra-keys-root button:focus-visible {
+  background: #e7e5e4;
+  outline: 2px solid #0f766e;
+  outline-offset: 1px;
+}
+
+#sierra-keys-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+#sierra-keys-list li {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 8px;
+}
+
+#sierra-keys-list li[data-waiting="true"] {
+  background: #ccfbf1;
+}
+
+#sierra-keys-list kbd {
+  font: 12px/1.2 ui-monospace, monospace;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid #d6d3d1;
+  background: #fafaf9 !important;
+  color: #000 !important;
+}
+
+#sierra-keys-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: #57534e;
+}
+
+#sierra-keys-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 2147483646;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: #1c1917;
+  color: #fffdf8;
+  font: 13px/1.4 ui-sans-serif, system-ui, sans-serif;
+  box-shadow: 0 8px 24px rgba(28, 25, 23, 0.25);
+}

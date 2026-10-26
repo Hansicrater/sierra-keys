@@ -1,0 +1,689 @@
+// Sierra's client admin has no shortcut map. Actions are found by the visible
+// labels in Sierra's own help: Leads > Leads Dashboard, Leads > Add Lead,
+// and the lead + menu (Add a note, Add a task, Send an email, Log a call).
+
+const ACTIONS = [
+  { id: "help", label: "Shortcut list", chord: "Alt+Shift+Slash", site: "both" },
+  { id: "search", label: "Focus search", chord: "Alt+Shift+KeyS", site: "admin" },
+  {
+    id: "leads",
+    label: "Leads Dashboard",
+    chord: "Alt+Shift+KeyM",
+    site: "admin",
+    kind: "nav",
+    labels: ["Leads Dashboard", "Manage Leads"],
+    parent: "Leads",
+  },
+  {
+    id: "add-lead",
+    label: "Add Lead",
+    chord: "Alt+Shift+KeyA",
+    site: "admin",
+    kind: "nav",
+    labels: ["Add Lead"],
+    parent: "Leads",
+  },
+  {
+    id: "note",
+    label: "Add a note",
+    chord: "Alt+Shift+KeyN",
+    site: "admin",
+    kind: "record",
+    labels: ["Add a note", "Add note"],
+  },
+  {
+    id: "task",
+    label: "Add a task",
+    chord: "Alt+Shift+KeyT",
+    site: "admin",
+    kind: "record",
+    labels: ["Add a task", "Add task"],
+  },
+  {
+    id: "email",
+    label: "Send an email",
+    chord: "Alt+Shift+KeyE",
+    site: "admin",
+    kind: "record",
+    labels: ["Send an email", "Send email"],
+  },
+  {
+    id: "call",
+    label: "Log a call",
+    chord: "Alt+Shift+KeyC",
+    site: "admin",
+    kind: "record",
+    labels: ["Log a call", "Log call"],
+  },
+  {
+    id: "dial",
+    label: "Call via personal number",
+    chord: "Alt+Shift+KeyP",
+    site: "admin",
+    kind: "dial",
+  },
+];
+
+const RESERVED = new Set([
+  "Ctrl+KeyC",
+  "Ctrl+KeyV",
+  "Ctrl+KeyX",
+  "Ctrl+KeyA",
+  "Ctrl+KeyZ",
+  "Ctrl+KeyY",
+  "Ctrl+KeyL",
+  "Ctrl+KeyT",
+  "Ctrl+KeyW",
+  "Ctrl+KeyN",
+  "Ctrl+KeyF",
+  "Ctrl+KeyR",
+  "Ctrl+Tab",
+  "Alt+ArrowLeft",
+  "Alt+ArrowRight",
+  "Alt+Shift+KeyL",
+  "Alt+Shift+KeyD",
+]);
+
+const MODIFIER_CODES = new Set([
+  "AltLeft",
+  "AltRight",
+  "ShiftLeft",
+  "ShiftRight",
+  "ControlLeft",
+  "ControlRight",
+  "MetaLeft",
+  "MetaRight",
+]);
+
+const CODE_LABEL = {
+  Slash: "/",
+  Backquote: "`",
+  Minus: "-",
+  Equal: "=",
+  BracketLeft: "[",
+  BracketRight: "]",
+  Backslash: "\\",
+  Semicolon: ";",
+  Quote: "'",
+  Comma: ",",
+  Period: ".",
+  Tab: "Tab",
+  Space: "Space",
+  Enter: "Enter",
+  Escape: "Esc",
+  ArrowLeft: "Left",
+  ArrowRight: "Right",
+  ArrowUp: "Up",
+  ArrowDown: "Down",
+};
+
+function eventToChord(event) {
+  if (!event || !event.code || MODIFIER_CODES.has(event.code)) return null;
+  const parts = [];
+  if (event.ctrlKey) parts.push("Ctrl");
+  if (event.altKey) parts.push("Alt");
+  if (event.shiftKey) parts.push("Shift");
+  parts.push(event.code);
+  return parts.join("+");
+}
+
+function chordHasModifier(chord) {
+  return chord.startsWith("Ctrl+") || chord.startsWith("Alt+") || chord.includes("+Ctrl+") || chord.includes("+Alt+");
+}
+
+function chordLabel(chord) {
+  return chord
+    .split("+")
+    .map((part) => {
+      if (part.startsWith("Key")) return part.slice(3);
+      if (part.startsWith("Digit")) return part.slice(5);
+      return CODE_LABEL[part] || part;
+    })
+    .join("+");
+}
+
+function rejectChord(chord) {
+  if (!chord || !chordHasModifier(chord)) return "Use Alt or Ctrl";
+  if (RESERVED.has(chord)) return "That chord belongs to the browser";
+  return null;
+}
+
+function norm(text) {
+  return String(text || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function isConnectedCall(label) {
+  if (/\bbrowser\b/.test(label)) return false;
+  if (/^call via\b/.test(label)) return true;
+  if (/^connected (phone|device)\b/.test(label)) return true;
+  return false;
+}
+
+// Sierra's call menu lists "Call via Browser" and "Call via [connected number]".
+// A personal dialer number is a separate row, or part of the Call via label.
+// Never guess when more than one connected number is showing.
+function chooseCall(labels, pickedNumber) {
+  const norms = [...new Set(labels.map(norm).filter(Boolean))];
+  const connected = norms.filter(isConnectedCall);
+  const personalConnected = connected.filter((label) => /\bpersonal\b/.test(label));
+  if (personalConnected.length === 1) return { step: "dial", label: personalConnected[0] };
+  if (personalConnected.length > 1) {
+    return { step: "none", reason: "More than one personal number is in the call menu" };
+  }
+  const personal = norms.filter((label) => /\bpersonal\b/.test(label) && !isConnectedCall(label) && !/\brole\b/.test(label));
+  if (!pickedNumber && personal.length === 1) return { step: "number", label: personal[0] };
+  if (personal.length > 1 && !pickedNumber) {
+    return { step: "none", reason: "More than one personal number is in the call menu" };
+  }
+  if (connected.length === 1) return { step: "dial", label: connected[0] };
+  if (connected.length > 1) return { step: "none", reason: "More than one phone is in the call menu" };
+  return { step: "none", reason: "Call via your phone isn't in this menu" };
+}
+
+function install(doc, storage) {
+  if (!doc || globalThis.__sierraKeys) return;
+  globalThis.__sierraKeys = true;
+
+  const host = doc.defaultView.location.hostname;
+  const admin = host === "sierrainteractivedev.com" || host.endsWith(".sierrainteractivedev.com");
+  let bindings = {};
+  let dirty = false;
+  let rebindId = null;
+  let pointer = { x: 0, y: 0 };
+  let toastTimer = 0;
+
+  function bindingFor(action) {
+    return bindings[action.id] || action.chord;
+  }
+
+  function actionForChord(chord) {
+    const matches = ACTIONS.filter((action) => bindingFor(action) === chord);
+    if (matches.length <= 1) return matches[0] || null;
+    return matches.find((action) => bindings[action.id] === chord) || matches[0];
+  }
+
+  function visible(el) {
+    if (!el || !el.isConnected) return false;
+    const style = doc.defaultView.getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function accessibleName(el) {
+    const aria = el.getAttribute("aria-label");
+    if (aria && aria.trim()) return aria.trim();
+    const title = el.getAttribute("title");
+    const text = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+    if (text && text.length <= 80) return text;
+    if (title) return title;
+    const child = el.querySelector("[aria-label], [title]");
+    if (!child) return "";
+    return child.getAttribute("aria-label") || child.getAttribute("title") || "";
+  }
+
+  function candidates(root) {
+    return root.querySelectorAll(
+      "a, button, [role='menuitem'], [role='button'], [role='link'], summary"
+    );
+  }
+
+  function findClickable(labels, root) {
+    const wanted = labels.map(norm);
+    const matches = [];
+    for (const el of candidates(root || doc)) {
+      if (!visible(el)) continue;
+      if (el.closest("#sierra-keys-root, #sierra-keys-toast")) continue;
+      const name = norm(accessibleName(el));
+      if (!wanted.includes(name)) continue;
+      if (name.includes("delete")) continue;
+      let score = 0;
+      if (el.closest("nav, header, [role='navigation'], [role='menu'], [role='menubar']")) score += 2;
+      matches.push({ el, score });
+    }
+    matches.sort((a, b) => b.score - a.score);
+    return matches[0] ? matches[0].el : null;
+  }
+
+  function clickEl(el) {
+    el.click();
+  }
+
+  function waitForClickable(labels, root) {
+    const existing = findClickable(labels, root);
+    if (existing) return Promise.resolve(existing);
+    return new Promise((resolve) => {
+      const view = doc.defaultView;
+      let done = false;
+      const finish = (el) => {
+        if (done) return;
+        done = true;
+        observer.disconnect();
+        view.clearTimeout(timer);
+        resolve(el || null);
+      };
+      const observer = new view.MutationObserver(() => {
+        const el = findClickable(labels, root);
+        if (el) finish(el);
+      });
+      observer.observe(doc.body, { childList: true, subtree: true });
+      const timer = view.setTimeout(() => finish(findClickable(labels, root)), 600);
+    });
+  }
+
+  function toast(message) {
+    let node = doc.getElementById("sierra-keys-toast");
+    if (!node) {
+      node = doc.createElement("div");
+      node.id = "sierra-keys-toast";
+      node.setAttribute("role", "status");
+      doc.documentElement.appendChild(node);
+    }
+    node.textContent = message;
+    doc.defaultView.clearTimeout(toastTimer);
+    toastTimer = doc.defaultView.setTimeout(() => node.remove(), 2200);
+  }
+
+  function findSearch() {
+    const inputs = doc.querySelectorAll("input[type='search'], input[type='text'], input:not([type])");
+    const ranked = [];
+    for (const el of inputs) {
+      if (!visible(el)) continue;
+      const hint = norm(
+        [
+          el.getAttribute("placeholder"),
+          el.getAttribute("aria-label"),
+          el.getAttribute("title"),
+          el.getAttribute("name"),
+          el.id,
+        ].join(" ")
+      );
+      const top = el.getBoundingClientRect().top;
+      let score = 0;
+      if (/search|find lead|find a lead|name, email|email or phone/.test(hint)) score += 5;
+      if (top >= 0 && top < 180) score += 3;
+      if (el.closest("header, nav, [role='banner']")) score += 2;
+      if (score > 0) ranked.push({ el, score });
+    }
+    ranked.sort((a, b) => b.score - a.score);
+    return ranked[0] ? ranked[0].el : null;
+  }
+
+  async function openNav(action) {
+    let el = findClickable(action.labels);
+    if (!el && action.parent) {
+      const parent = findClickable([action.parent]);
+      if (parent) {
+        clickEl(parent);
+        el = await waitForClickable(action.labels);
+      }
+    }
+    if (!el) {
+      toast("That page isn't in the menu here");
+      return;
+    }
+    clickEl(el);
+  }
+
+  function currentRow() {
+    const hit = doc.elementFromPoint(pointer.x, pointer.y);
+    const hovered = hit && hit.closest && hit.closest("tr, [role='row']");
+    if (hovered && !hovered.closest("#sierra-keys-root")) return hovered;
+    const boxes = [...doc.querySelectorAll("input[type='checkbox']:checked")].filter(visible);
+    const rows = [...new Set(boxes.map((box) => box.closest("tr, [role='row']")).filter(Boolean))];
+    return rows.length === 1 ? rows[0] : null;
+  }
+
+  function findOpener(root) {
+    const ranked = [];
+    for (const el of candidates(root)) {
+      if (!visible(el)) continue;
+      if (el.closest("#sierra-keys-root")) continue;
+      const blob = norm(`${accessibleName(el)} ${el.getAttribute("title") || ""}`);
+      if (/delete|remove|permanently/.test(blob)) continue;
+      let score = 0;
+      if (blob === "+" || blob === "add" || /\bplus\b|\bmore actions\b|\bquick actions\b/.test(blob)) score += 5;
+      if (score > 0) ranked.push({ el, score });
+    }
+    ranked.sort((a, b) => b.score - a.score);
+    return ranked[0] ? ranked[0].el : null;
+  }
+
+  async function openRecord(action) {
+    const direct = findClickable(action.labels);
+    if (direct) {
+      clickEl(direct);
+      return;
+    }
+    const row = currentRow();
+    const opener = findOpener(row || doc.body);
+    if (!row && !opener) {
+      toast("Open a lead first");
+      return;
+    }
+    if (opener) {
+      clickEl(opener);
+      const el = await waitForClickable(action.labels);
+      if (el) {
+        clickEl(el);
+        return;
+      }
+    }
+    toast(row || opener ? "That action isn't on this page" : "Open a lead first");
+  }
+
+  function findPhone(root) {
+    const ranked = [];
+    for (const el of candidates(root)) {
+      if (!visible(el)) continue;
+      if (el.closest("#sierra-keys-root, #sierra-keys-toast")) continue;
+      const blob = norm(`${accessibleName(el)} ${el.getAttribute("title") || ""}`);
+      if (/log a call|log call|add to call|text message|send text|call list|call via/.test(blob)) continue;
+      let score = 0;
+      if (blob === "call" || blob === "phone" || blob === "call lead") score += 5;
+      if (/\bphone\b/.test(blob) && !/status/.test(blob)) score += 3;
+      if (score > 0) ranked.push({ el, score });
+    }
+    ranked.sort((a, b) => b.score - a.score);
+    return ranked[0] ? ranked[0].el : null;
+  }
+
+  function visibleLabels() {
+    const labels = [];
+    for (const el of candidates(doc)) {
+      if (!visible(el)) continue;
+      if (el.closest("#sierra-keys-root, #sierra-keys-toast")) continue;
+      const name = norm(accessibleName(el));
+      if (name) labels.push(name);
+    }
+    return labels;
+  }
+
+  function findNamed(label) {
+    const wanted = norm(label);
+    const matches = [];
+    for (const el of candidates(doc)) {
+      if (!visible(el)) continue;
+      if (el.closest("#sierra-keys-root, #sierra-keys-toast")) continue;
+      if (norm(accessibleName(el)) !== wanted) continue;
+      let score = 0;
+      if (el.closest("[role='menu'], [role='dialog'], nav, header")) score += 2;
+      matches.push({ el, score });
+    }
+    matches.sort((a, b) => b.score - a.score);
+    return matches[0] ? matches[0].el : null;
+  }
+
+  function waitForCallMenu() {
+    const interesting = (labels) => labels.some((label) => /call via|\bpersonal\b|connected phone|connected device/.test(label));
+    if (interesting(visibleLabels())) return Promise.resolve(visibleLabels());
+    return new Promise((resolve) => {
+      const view = doc.defaultView;
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        observer.disconnect();
+        view.clearTimeout(timer);
+        resolve(visibleLabels());
+      };
+      const observer = new view.MutationObserver(() => {
+        if (interesting(visibleLabels())) finish();
+      });
+      observer.observe(doc.body, { childList: true, subtree: true, attributes: true });
+      const timer = view.setTimeout(finish, 700);
+    });
+  }
+
+  async function openDial() {
+    const row = currentRow();
+    const opener = findPhone(row || doc.body);
+    if (!opener) {
+      toast(row ? "That action isn't on this page" : "Open a lead first");
+      return;
+    }
+    clickEl(opener);
+    let labels = await waitForCallMenu();
+    let choice = chooseCall(labels, false);
+    if (choice.step === "number") {
+      const number = findNamed(choice.label);
+      if (!number) {
+        toast(choice.reason || "Call via your phone isn't in this menu");
+        return;
+      }
+      clickEl(number);
+      labels = await waitForCallMenu();
+      choice = chooseCall(labels, true);
+    }
+    if (choice.step !== "dial") {
+      toast(choice.reason);
+      return;
+    }
+    const dial = findNamed(choice.label);
+    if (!dial) {
+      toast("Call via your phone isn't in this menu");
+      return;
+    }
+    clickEl(dial);
+  }
+
+  function closeOverlay() {
+    rebindId = null;
+    const root = doc.getElementById("sierra-keys-root");
+    if (root) root.remove();
+  }
+
+  function renderOverlay() {
+    let root = doc.getElementById("sierra-keys-root");
+    if (!root) {
+      root = doc.createElement("section");
+      root.id = "sierra-keys-root";
+      root.setAttribute("role", "dialog");
+      root.setAttribute("aria-modal", "true");
+      root.setAttribute("aria-label", "Sierra shortcuts");
+      doc.documentElement.appendChild(root);
+      root.addEventListener("click", (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+        event.stopPropagation();
+        if (button.dataset.act === "close") closeOverlay();
+        if (button.dataset.act === "reset") {
+          bindings = {};
+          rebindId = null;
+          saveBindings();
+          renderOverlay();
+          toast("Shortcuts reset");
+        }
+        if (button.dataset.act === "rebind") {
+          rebindId = button.dataset.id;
+          renderOverlay();
+        }
+      });
+    }
+    const items = ACTIONS.map((action) => {
+      const waiting = rebindId === action.id;
+      const where = action.site === "admin" ? "Client Admin" : "Both sites";
+      return `<li data-waiting="${waiting ? "true" : "false"}">
+        <span>${escapeHtml(action.label)}<br><small style="color:#78716c">${where}</small></span>
+        <kbd>${waiting ? "Press a chord" : escapeHtml(chordLabel(bindingFor(action)))}</kbd>
+        <button type="button" data-act="rebind" data-id="${action.id}">Change</button>
+      </li>`;
+    }).join("");
+    root.innerHTML = `
+      <div id="sierra-keys-head">
+        <div>
+          <h2>Sierra shortcuts</h2>
+          <p>${admin ? "Client Admin" : "Public site"}. Letters still type in fields. Alt or Ctrl chords run.</p>
+        </div>
+        <button type="button" data-act="close">Close</button>
+      </div>
+      <ul id="sierra-keys-list">${items}</ul>
+      <div id="sierra-keys-foot">
+        <span>Esc closes. Change, then press the new chord.</span>
+        <button type="button" data-act="reset">Reset</button>
+      </div>`;
+  }
+
+  function escapeHtml(text) {
+    return String(text)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function saveBindings() {
+    dirty = true;
+    storage.set({ bindings });
+  }
+
+  function editable(target) {
+    const el = target && target.closest && target.closest("input, textarea, select, [contenteditable='true'], [contenteditable='']");
+    if (!el) return false;
+    if (el.matches("input")) {
+      const type = (el.getAttribute("type") || "text").toLowerCase();
+      if (["button", "checkbox", "radio", "submit", "reset", "file", "hidden", "image"].includes(type)) return false;
+    }
+    return true;
+  }
+
+  async function run(action) {
+    if (action.id === "help") {
+      if (doc.getElementById("sierra-keys-root")) closeOverlay();
+      else renderOverlay();
+      return;
+    }
+    if (action.site === "admin" && !admin) {
+      toast("That shortcut is for Client Admin");
+      return;
+    }
+    if (action.id === "search") {
+      const field = findSearch();
+      if (!field) {
+        toast("Search isn't on this page");
+        return;
+      }
+      field.focus();
+      if (typeof field.select === "function") field.select();
+      return;
+    }
+    if (action.kind === "nav") return openNav(action);
+    if (action.kind === "record") return openRecord(action);
+    if (action.kind === "dial") return openDial();
+  }
+
+  doc.addEventListener("pointermove", (event) => {
+    pointer = { x: event.clientX, y: event.clientY };
+  }, true);
+
+  doc.defaultView.addEventListener("keydown", (event) => {
+    if (event.repeat) return;
+    if (event.code === "Escape" && doc.getElementById("sierra-keys-root")) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (rebindId) {
+        rebindId = null;
+        renderOverlay();
+      } else {
+        closeOverlay();
+      }
+      return;
+    }
+    const chord = eventToChord(event);
+    if (!chord) return;
+    if (rebindId) {
+      if (!event.altKey && !event.ctrlKey) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const reason = rejectChord(chord);
+      if (reason) {
+        toast(reason);
+        return;
+      }
+      const owner = actionForChord(chord);
+      if (owner && owner.id !== rebindId) {
+        toast(`Already used by ${owner.label}`);
+        return;
+      }
+      bindings = { ...bindings, [rebindId]: chord };
+      rebindId = null;
+      saveBindings();
+      renderOverlay();
+      return;
+    }
+    const action = actionForChord(chord);
+    if (!action) return;
+    if (editable(event.target) && !event.altKey && !event.ctrlKey) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void run(action);
+  }, true);
+
+  storage.get((saved) => {
+    if (dirty) return;
+    bindings = saved && saved.bindings ? saved.bindings : {};
+  });
+}
+
+function browserStorage() {
+  return {
+    get(callback) {
+      if (!globalThis.chrome || !chrome.storage || !chrome.storage.local) {
+        callback({});
+        return;
+      }
+      chrome.storage.local.get("bindings", (data) => {
+        if (chrome.runtime && chrome.runtime.lastError) callback({});
+        else callback(data || {});
+      });
+    },
+    set(value) {
+      if (!globalThis.chrome || !chrome.storage || !chrome.storage.local) return;
+      chrome.storage.local.set(value);
+    },
+  };
+}
+
+if (typeof document !== "undefined" && document.readyState) {
+  const start = () => install(document, browserStorage());
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
+  else start();
+}
+
+if (typeof process !== "undefined" && process.argv && process.argv.includes("--self-test")) {
+  const failures = [];
+  const check = (name, got, expected) => {
+    if (got !== expected) failures.push(`${name}: got ${got} expected ${expected}`);
+  };
+  check("letter", eventToChord({ code: "KeyS", altKey: true, shiftKey: true, ctrlKey: false }), "Alt+Shift+KeyS");
+  check("slash", eventToChord({ code: "Slash", altKey: true, shiftKey: true, ctrlKey: false }), "Alt+Shift+Slash");
+  check("modifier only", eventToChord({ code: "ShiftLeft", altKey: true, shiftKey: true, ctrlKey: false }), null);
+  check("reserved copy", rejectChord("Alt+Shift+KeyL"), "That chord belongs to the browser");
+  check("reserved paste", rejectChord("Ctrl+KeyV"), "That chord belongs to the browser");
+  check("plain letter", rejectChord("KeyS"), "Use Alt or Ctrl");
+  check("allowed", rejectChord("Alt+Shift+KeyS"), null);
+  check("label", chordLabel("Alt+Shift+Slash"), "Alt+Shift+/");
+  check("label letter", chordLabel("Alt+Shift+KeyM"), "Alt+Shift+M");
+  check("download chord reserved", rejectChord("Alt+Shift+KeyD"), "That chord belongs to the browser");
+  check("dial p free", rejectChord("Alt+Shift+KeyP"), null);
+  const connectedOnly = chooseCall(["Call via Browser", "Call via (555) 010-0000"], false);
+  check("one connected", `${connectedOnly.step}:${connectedOnly.label}`, "dial:call via (555) 010-0000");
+  const pickPersonal = chooseCall(["Call via Browser", "Call via (555) 010-0000", "Personal Number"], false);
+  check("pick personal first", `${pickPersonal.step}:${pickPersonal.label}`, "number:personal number");
+  const thenDial = chooseCall(["Call via Browser", "Call via (555) 010-0000", "Personal Number"], true);
+  check("then connected", `${thenDial.step}:${thenDial.label}`, "dial:call via (555) 010-0000");
+  const personalLine = chooseCall(["Call via Browser", "Call via Personal (555) 010-0000", "Call via Buyer (555) 010-9999"], false);
+  check("personal line", `${personalLine.step}:${personalLine.label}`, "dial:call via personal (555) 010-0000");
+  const ambiguous = chooseCall(["Call via (555) 010-0000", "Call via (555) 010-9999"], false);
+  check("ambiguous", ambiguous.step, "none");
+  const browserOnly = chooseCall(["Call via Browser", "Add to Call List"], false);
+  check("browser only", browserOnly.reason, "Call via your phone isn't in this menu");
+  if (failures.length) {
+    console.error(failures.join("\n"));
+    process.exit(1);
+  }
+  console.log("sierra-keys self-test ok");
+}
