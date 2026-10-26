@@ -17,7 +17,7 @@ On any Client Admin page, Shift+arrow moves a highlight to the nearest stop in t
 | Alt+Shift+M | Leads Dashboard |
 | Alt+Shift+A | Add Lead |
 | Alt+Shift+N | Add a note |
-| Alt+Shift+T | Add a task |
+| Alt+Shift+T | Tasks |
 | Alt+Shift+E | Send an email |
 | Alt+Shift+X | Send a text |
 | Alt+Enter | Send the drafted text |
@@ -26,7 +26,7 @@ On any Client Admin page, Shift+arrow moves a highlight to the nearest stop in t
 
 Alt+Shift+D and Alt+Shift+L are left for Omarchy. Those chords start Download Video and Copy URL. The cheatsheet will not let you bind them.
 
-On a leads list, check one lead or hover its row before a note, task, email, text, call, or dial shortcut. Note, task, email, text, and log-call open the control. They do not send, save, or delete. Add a note then puts the cursor in the note box. The text shortcut opens Send Text Message from the lead's + menu, or the Text Msg button on the lead, or the Texts link on that row. Alt+Enter sends that draft. It clicks Send only when the focused box is a text composer and the message is not empty. It does not send an email. The dial shortcut works from the open lead profile as well as from a hovered or single checked lead. On a profile it clicks the phone icon, even when the pointer is over a note or another row. It reads the call menu that opens, including rows that are not links. It chooses Personal Number when that row is there, then Call via the connected phone. A bare connected number counts when it is the only phone in that menu. It does not choose Call via Browser. If more than one connected number is showing and none is marked personal, it does not dial.
+On a leads list, check one lead or hover its row before a note, email, text, call, or dial shortcut. Alt+Shift+T opens the Tasks tab in the menu. Note, task, email, text, and log-call open the control. They do not send, save, or delete. Add a note then puts the cursor in the note box. The text shortcut opens Send Text Message from the lead's + menu, or the Text Msg button on the lead, or the Texts link on that row. Alt+Enter sends that draft. It clicks Send only when the focused box is a text composer and the message is not empty. It does not send an email. The dial shortcut works from the open lead profile as well as from a hovered or single checked lead. On a profile it clicks the phone icon, even when the pointer is over a note or another row. It reads the call menu that opens, including rows that are not links. It chooses Personal Number when that row is there, then Call via the connected phone. A bare connected number counts when it is the only phone in that menu. It does not choose Call via Browser. If more than one connected number is showing and none is marked personal, it does not dial.
 
 The script runs on `https://*.sierrainteractivedev.com/*`. On `sierrainteractive.com` the cheatsheet still opens, and a Client Admin chord says so.
 

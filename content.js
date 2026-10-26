@@ -33,11 +33,10 @@ const ACTIONS = [
   },
   {
     id: "task",
-    label: "Add a task",
+    label: "Tasks",
     chord: "Alt+Shift+KeyT",
     site: "admin",
-    kind: "record",
-    labels: ["Add a task", "Add task"],
+    kind: "tasks",
   },
   {
     id: "email",
@@ -230,6 +229,47 @@ function scoreNoteField(item) {
   if (item.height >= 48) score += 1;
   if (!item.fresh && item.height > 320) score -= 4;
   return score;
+}
+
+// The Tasks control is the tab in the menu, not Add a task on a lead.
+function taskNameKind(name) {
+  const text = norm(name);
+  if (text === "add a task" || text === "add task") return "";
+  if (text === "task manager" || text === "go to task manager" || text === "go to tasks") return "manager";
+  if (text === "tasks" || text === "task" || /^tasks?\s+\d+$/.test(text)) return "tasks";
+  return "";
+}
+
+function scoreTaskTarget(item) {
+  const kind = taskNameKind(item.name);
+  if (!kind || (!item.inHeader && !item.isTab)) return -1;
+  const name = norm(item.name);
+  let score = 0;
+  if (kind === "tasks" && name !== "task") {
+    if (item.inHeader) score += 8;
+    if (item.isTab) score += 6;
+  } else if (kind === "tasks") {
+    if (item.inHeader) score += 7;
+    if (item.isTab) score += 5;
+  } else if (item.inHeader) {
+    score += 4;
+  } else {
+    score += 3;
+  }
+  return score;
+}
+
+function chooseTaskTarget(candidates) {
+  let best = null;
+  let bestScore = 0;
+  for (const item of candidates) {
+    const score = scoreTaskTarget(item);
+    if (score > bestScore) {
+      best = item;
+      bestScore = score;
+    }
+  }
+  return best;
 }
 
 function chooseNoteField(candidates) {
@@ -536,6 +576,38 @@ function install(doc, storage) {
       return;
     }
     clickEl(el);
+  }
+
+  function taskCandidates() {
+    const selector = "a, button, [role='tab'], [role='menuitem'], [role='button'], [role='link'], summary, li";
+    const found = [];
+    const seen = new Set();
+    for (const el of doc.querySelectorAll(selector)) {
+      if (!visible(el) || el.closest("#sierra-keys-root, #sierra-keys-toast")) continue;
+      const name = accessibleName(el);
+      if (!name) continue;
+      let clickable = el;
+      const inner = el.querySelector("a, button, [role='tab'], [role='button']");
+      if (inner && visible(inner) && norm(accessibleName(inner)) === norm(name)) clickable = inner;
+      if (seen.has(clickable)) continue;
+      seen.add(clickable);
+      found.push({
+        el: clickable,
+        name,
+        inHeader: !!clickable.closest("nav, header, [role='navigation'], [role='menubar'], [role='banner']"),
+        isTab: (clickable.getAttribute("role") || "") === "tab" || !!clickable.closest("[role='tablist'], .nav-tabs, .nav-pills"),
+      });
+    }
+    return found;
+  }
+
+  function openTasks() {
+    const target = chooseTaskTarget(taskCandidates());
+    if (!target) {
+      toast("That page isn't in the menu here");
+      return;
+    }
+    clickEl(target.el);
   }
 
   function currentRow() {
@@ -1275,6 +1347,7 @@ function install(doc, storage) {
       return;
     }
     if (action.kind === "nav") return openNav(action);
+    if (action.kind === "tasks") return openTasks();
     if (action.kind === "record") return openRecord(action);
     if (action.kind === "dial") return openDial();
     if (action.kind === "text") return openText();
@@ -1508,6 +1581,30 @@ if (typeof process !== "undefined" && process.argv && process.argv.includes("--s
     { id: "other", hint: "", around: "", fresh: false, inDialog: false, height: 80 },
   ]);
   check("closed note waits", idleNote, null);
+  const taskTab = chooseTaskTarget([
+    { id: "add", name: "Add a task", inHeader: false, isTab: false },
+    { id: "header", name: "Tasks", inHeader: true, isTab: false },
+    { id: "manager", name: "Go to Task Manager", inHeader: true, isTab: false },
+  ]);
+  check("tasks tab", taskTab && taskTab.id, "header");
+  const taskManager = chooseTaskTarget([
+    { id: "manager", name: "Go to Task Manager", inHeader: true, isTab: false },
+  ]);
+  check("task manager fallback", taskManager && taskManager.id, "manager");
+  const taskColumn = chooseTaskTarget([
+    { id: "column", name: "Tasks", inHeader: false, isTab: false },
+  ]);
+  check("task column waits", taskColumn, null);
+  const leadTaskTab = chooseTaskTarget([
+    { id: "tab", name: "Tasks", inHeader: false, isTab: true },
+    { id: "column", name: "Tasks", inHeader: false, isTab: false },
+  ]);
+  check("lead task tab", leadTaskTab && leadTaskTab.id, "tab");
+  const taskBadge = chooseTaskTarget([
+    { id: "badge", name: "Tasks 4", inHeader: true, isTab: false },
+    { id: "manager", name: "Go to Task Manager", inHeader: true, isTab: false },
+  ]);
+  check("tasks badge", taskBadge && taskBadge.id, "badge");
   if (failures.length) {
     console.error(failures.join("\n"));
     process.exit(1);
