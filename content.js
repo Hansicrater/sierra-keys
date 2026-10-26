@@ -183,6 +183,61 @@ function chooseCall(labels, pickedNumber) {
   return { step: "none", reason: "Call via your phone isn't in this menu" };
 }
 
+const ARROW_DIRECTIONS = {
+  ArrowDown: "down",
+  ArrowUp: "up",
+  ArrowLeft: "left",
+  ArrowRight: "right",
+};
+
+function isLeadNameCandidate(href, text, className) {
+  const label = norm(text);
+  if (!label || label.length > 80) return false;
+  if (label.includes("@")) return false;
+  if (/^\+?[\d\s().-]{7,}$/.test(label)) return false;
+  if (/^(leads dashboard|manage leads|add lead|log a call|log call|add a note|add note|add a task|add task|send an email|send email|call|phone)$/.test(label)) return false;
+  const hint = `${href || ""} ${className || ""}`.toLowerCase();
+  return /lead-detail|leaddetail|lead_detail|lead-name|leadname/.test(hint);
+}
+
+// Pick the closest lead name that actually lies in the arrow's direction.
+// A name stacked above or below does not count as left or right.
+function nearestInDirection(from, items, direction) {
+  let best = null;
+  let bestScore = Infinity;
+  for (const item of items) {
+    if (item.id != null && item.id === from.id) continue;
+    const dx = item.cx - from.cx;
+    const dy = item.cy - from.cy;
+    let primary;
+    let secondary;
+    if (direction === "down") {
+      primary = dy;
+      secondary = Math.abs(dx);
+    } else if (direction === "up") {
+      primary = -dy;
+      secondary = Math.abs(dx);
+    } else if (direction === "right") {
+      primary = dx;
+      secondary = Math.abs(dy);
+    } else if (direction === "left") {
+      primary = -dx;
+      secondary = Math.abs(dy);
+    } else {
+      continue;
+    }
+    if (primary <= 1) continue;
+    // The move has to be mostly along the arrow, not a diagonal jump to another row.
+    if (secondary > primary) continue;
+    const score = primary + secondary * 2;
+    if (score < bestScore) {
+      bestScore = score;
+      best = item;
+    }
+  }
+  return best;
+}
+
 function install(doc, storage) {
   if (!doc || globalThis.__sierraKeys) return;
   globalThis.__sierraKeys = true;
@@ -192,6 +247,7 @@ function install(doc, storage) {
   let bindings = {};
   let dirty = false;
   let rebindId = null;
+  let highlighted = null;
   let pointer = { x: 0, y: 0 };
   let toastTimer = 0;
 
@@ -516,7 +572,7 @@ function install(doc, storage) {
       <div id="sierra-keys-head">
         <div>
           <h2>Sierra shortcuts</h2>
-          <p>${admin ? "Client Admin" : "Public site"}. Letters still type in fields. Alt or Ctrl chords run.</p>
+          <p>${admin ? "Client Admin. Shift+arrows move between lead names. Enter opens the highlighted name." : "Public site."} Letters still type in fields. Alt or Ctrl chords run.</p>
         </div>
         <button type="button" data-act="close">Close</button>
       </div>
@@ -550,6 +606,72 @@ function install(doc, storage) {
     return true;
   }
 
+  function fieldIsEmpty(target) {
+    const field = target && target.closest && target.closest("input, textarea, [contenteditable='true'], [contenteditable='']");
+    if (!field || field.matches("select")) return false;
+    if (field.matches("input")) {
+      const type = (field.getAttribute("type") || "text").toLowerCase();
+      if (["button", "checkbox", "radio", "submit", "reset", "file", "hidden", "image"].includes(type)) return false;
+    }
+    if (field.matches("input, textarea")) return field.value.trim() === "";
+    return (field.textContent || "").replace(/\u00a0/g, " ").trim() === "";
+  }
+
+  function leadNameLinks() {
+    const links = [];
+    for (const el of doc.querySelectorAll("a[href]")) {
+      if (!visible(el)) continue;
+      if (el.closest("#sierra-keys-root, #sierra-keys-toast, nav, header, [role='navigation']")) continue;
+      if (!isLeadNameCandidate(el.getAttribute("href"), accessibleName(el), `${el.className || ""} ${el.id || ""}`)) continue;
+      links.push(el);
+    }
+    return links;
+  }
+
+  function pointOf(rect) {
+    return {
+      cx: rect.left + rect.width / 2,
+      cy: rect.top + rect.height / 2,
+    };
+  }
+
+  function highlightOrigin() {
+    if (highlighted && highlighted.isConnected) {
+      const point = pointOf(highlighted.getBoundingClientRect());
+      return { ...point, id: highlighted };
+    }
+    const active = doc.activeElement;
+    if (active && active !== doc.body && active !== doc.documentElement && active.getBoundingClientRect) {
+      const rect = active.getBoundingClientRect();
+      if (rect.width || rect.height) return pointOf(rect);
+    }
+    return { cx: pointer.x, cy: pointer.y };
+  }
+
+  function setHighlight(el) {
+    if (highlighted && highlighted !== el) highlighted.classList.remove("sierra-keys-lead-target");
+    highlighted = el;
+    el.classList.add("sierra-keys-lead-target");
+    el.scrollIntoView({ block: "nearest", inline: "nearest" });
+    if (typeof el.focus === "function") el.focus({ preventScroll: true });
+  }
+
+  function moveLeadHighlight(direction) {
+    const links = leadNameLinks();
+    if (!links.length) {
+      toast("No lead names on this page");
+      return;
+    }
+    const from = highlightOrigin();
+    const items = links.map((el) => {
+      const point = pointOf(el.getBoundingClientRect());
+      return { id: el, el, ...point };
+    });
+    const next = nearestInDirection(from, items, direction);
+    if (!next) return;
+    setHighlight(next.el);
+  }
+
   async function run(action) {
     if (action.id === "help") {
       if (doc.getElementById("sierra-keys-root")) closeOverlay();
@@ -580,6 +702,24 @@ function install(doc, storage) {
   }, true);
 
   doc.defaultView.addEventListener("keydown", (event) => {
+    const direction = ARROW_DIRECTIONS[event.code];
+    const shiftArrow = admin && direction && event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey;
+    if (event.repeat && !shiftArrow) return;
+    if (shiftArrow && !rebindId) {
+      if (editable(event.target) && !fieldIsEmpty(event.target)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      moveLeadHighlight(direction);
+      return;
+    }
+    if ((event.code === "Enter" || event.code === "NumpadEnter") && admin && highlighted && highlighted.isConnected && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      if (editable(event.target)) return;
+      if (event.target && event.target.closest && event.target.closest("#sierra-keys-root")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      highlighted.click();
+      return;
+    }
     if (event.repeat) return;
     if (event.code === "Escape" && doc.getElementById("sierra-keys-root")) {
       event.preventDefault();
@@ -668,6 +808,23 @@ if (typeof process !== "undefined" && process.argv && process.argv.includes("--s
   check("label", chordLabel("Alt+Shift+Slash"), "Alt+Shift+/");
   check("label letter", chordLabel("Alt+Shift+KeyM"), "Alt+Shift+M");
   check("download chord reserved", rejectChord("Alt+Shift+KeyD"), "That chord belongs to the browser");
+  check("lead name href", isLeadNameCandidate("lead-detail.aspx?id=1", "Ada Lovelace", ""), true);
+  check("menu is not a lead", isLeadNameCandidate("lead-detail.aspx", "Leads Dashboard", "lead-name"), false);
+  check("plain link is not a lead", isLeadNameCandidate("/settings.aspx", "Ada Lovelace", ""), false);
+  const column = [
+    { id: "a", cx: 100, cy: 10 },
+    { id: "b", cx: 108, cy: 40 },
+    { id: "c", cx: 100, cy: 90 },
+  ];
+  check("down the column", nearestInDirection(column[0], column, "down").id, "b");
+  check("end of column", nearestInDirection(column[2], column, "down"), null);
+  check("down is not right", nearestInDirection(column[0], column, "right"), null);
+  const sideBySide = [
+    { id: "a", cx: 20, cy: 30 },
+    { id: "b", cx: 140, cy: 34 },
+  ];
+  check("right neighbor", nearestInDirection(sideBySide[0], sideBySide, "right").id, "b");
+  check("side is not down", nearestInDirection(sideBySide[0], sideBySide, "down"), null);
   check("dial p free", rejectChord("Alt+Shift+KeyP"), null);
   const connectedOnly = chooseCall(["Call via Browser", "Call via (555) 010-0000"], false);
   check("one connected", `${connectedOnly.step}:${connectedOnly.label}`, "dial:call via (555) 010-0000");

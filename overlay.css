@@ -97,6 +97,13 @@
   color: #57534e;
 }
 
+a.sierra-keys-lead-target {
+  outline: 3px solid #000 !important;
+  outline-offset: 2px !important;
+  background: #fef08a !important;
+  color: #000 !important;
+}
+
 #sierra-keys-toast {
   position: fixed;
   left: 50%;
