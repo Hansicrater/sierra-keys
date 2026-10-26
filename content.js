@@ -169,16 +169,27 @@ function norm(text) {
     .toLowerCase();
 }
 
+function isPhoneLabel(label) {
+  const text = norm(label);
+  const digits = text.replace(/\D/g, "");
+  return digits.length >= 7 && digits.length <= 15 && /^[\d\s().+-]+$/.test(text);
+}
+
 function isConnectedCall(label) {
   if (/\bbrowser\b/.test(label)) return false;
-  if (/^call via\b/.test(label)) return true;
-  if (/^connected (phone|device)\b/.test(label)) return true;
+  if (/\b(isn't|is not|menu)\b/.test(label)) return false;
+  if (isPhoneLabel(label)) return false;
+  if (/\bcall via\b/.test(label)) return true;
+  if (/\bcall (using|with|from|on)\b/.test(label)) return true;
+  if (/\bconnected (phone|device)\b/.test(label)) return true;
+  if (/^(my phone|this phone|your phone|handset)\b/.test(label)) return true;
+  if (/^use (my|your|this|the) (phone|device|handset)\b/.test(label)) return true;
   return false;
 }
 
 // Sierra's call menu lists "Call via Browser" and "Call via [connected number]".
 // A personal dialer number is a separate row, or part of the Call via label.
-// Never guess when more than one connected number is showing.
+// labels are those menu rows only. Never guess when more than one connected number is showing.
 function chooseCall(labels, pickedNumber) {
   const norms = [...new Set(labels.map(norm).filter(Boolean))];
   const connected = norms.filter(isConnectedCall);
@@ -194,6 +205,10 @@ function chooseCall(labels, pickedNumber) {
   }
   if (connected.length === 1) return { step: "dial", label: connected[0] };
   if (connected.length > 1) return { step: "none", reason: "More than one phone is in the call menu" };
+  // Some lead-profile menus list the connected number by itself after Personal Number.
+  const phones = norms.filter((label) => isPhoneLabel(label));
+  if (phones.length === 1 && (pickedNumber || personal.length === 0)) return { step: "dial", label: phones[0] };
+  if (phones.length > 1) return { step: "none", reason: "More than one phone is in the call menu" };
   return { step: "none", reason: "Call via your phone isn't in this menu" };
 }
 
@@ -251,12 +266,12 @@ function phoneOpenerScore(hint, href) {
   const link = String(href || "").toLowerCase();
   if (!blob && !link.startsWith("tel:")) return 0;
   if (/log a call|log call|add to call|text message|send text|call list|call via|phone status|header phone/.test(blob)) return 0;
-  if (link.startsWith("tel:")) return 5;
-  if (blob === "call" || blob === "phone" || blob === "call lead" || blob === "click to call") return 5;
-  if (/^[\d\s().+-]{7,}$/.test(blob) && blob.replace(/\D/g, "").length >= 7) return 4;
-  if (/\b(fa-phone|glyphicon-earphone|glyphicon-phone|icon-phone|phone-icon|btn-call|call-btn|dialer)\b/.test(blob)) return 4;
-  if (/\b(phone|dial|dialer)\b/.test(blob) && !/status/.test(blob)) return 4;
-  if (/\bcall\b/.test(blob) && !/\b(logged|history|via|list|widget|back)\b/.test(blob)) return 3;
+  // The icon opens Sierra's call menu. A tel: link or the number itself often does not.
+  if (blob === "call" || blob === "phone" || blob === "call lead" || blob === "click to call") return 6;
+  if (/\b(fa-phone|glyphicon-earphone|glyphicon-phone|icon-phone|phone-icon|btn-call|call-btn|dialer)\b/.test(blob)) return 6;
+  if (/\b(phone|dial|dialer)\b/.test(blob) && !/status/.test(blob)) return 5;
+  if (/\bcall\b/.test(blob) && !/\b(logged|history|via|list|widget|back)\b/.test(blob)) return 4;
+  if (link.startsWith("tel:") || isPhoneLabel(blob)) return 2;
   return 0;
 }
 
@@ -551,7 +566,7 @@ function install(doc, storage) {
     return bits.filter(Boolean).join(" ");
   }
 
-  function findPhone(root) {
+  function findPhones(root) {
     const selector = "a, button, [role='button'], [role='link'], [role='menuitem'], summary, [onclick], i, svg, img";
     const ranked = new Map();
     for (const el of root.querySelectorAll(selector)) {
@@ -559,7 +574,7 @@ function install(doc, storage) {
       if (el.closest("#sierra-keys-root, #sierra-keys-toast, nav, [role='banner'], [role='navigation']")) continue;
       const score = phoneOpenerScore(phoneHint(el), el.getAttribute("href") || "");
       if (score <= 0) continue;
-      const target = el.closest("a, button, [role='button'], [role='link'], [onclick]") || el;
+      const target = el.closest("a, button, [role='button'], [role='link'], [onclick], .btn") || el;
       const rect = target.getBoundingClientRect();
       if (rect.width > 240 || rect.height > 80 || rect.width < 8 || rect.height < 8) continue;
       const previous = ranked.get(target);
@@ -569,50 +584,140 @@ function install(doc, storage) {
     }
     const matches = [...ranked.values()];
     matches.sort((a, b) => b.score - a.score || a.top - b.top);
-    return matches[0] ? matches[0].el : null;
+    return matches.map((match) => match.el);
   }
 
-  function visibleLabels() {
+  // Popups Sierra adds when the phone icon is clicked. The menu is often a list
+  // of divs, not links, so the page-wide link scan never sees "Call via".
+  let menuRoots = [];
+
+  function hintedPopup(el) {
+    const hint = `${el.id || ""} ${typeof el.className === "string" ? el.className : ""}`;
+    return /menu|dropdown|popover|popup|dial|context|phone|call|k-animation|k-popup|k-list|radmenu/i.test(hint);
+  }
+
+  function isFloating(el) {
+    let node = el;
+    for (let depth = 0; node && depth < 4; depth += 1) {
+      const position = doc.defaultView.getComputedStyle(node).position;
+      if (position === "absolute" || position === "fixed") return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
+
+  function menuRowLabel(el) {
+    const text = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+    if (text && text.length <= 80) return norm(text);
+    return norm(accessibleName(el));
+  }
+
+  function menuRows(menu) {
+    const selector = "a, button, [role='menuitem'], [role='option'], [role='button'], li, td, summary, div, span";
+    const rows = [];
+    for (const el of menu.querySelectorAll(selector)) {
+      if (!visible(el)) continue;
+      const label = menuRowLabel(el);
+      if (!label || label.length > 80) continue;
+      const inner = el.querySelector("a, button, [role='menuitem'], [role='option'], [role='button'], li, td, span, div");
+      if (inner && menuRowLabel(inner) === label) continue;
+      rows.push({ el, label });
+    }
+    return rows;
+  }
+
+  function isCallMenu(el) {
+    if (!el || el.nodeType !== 1 || !el.isConnected) return false;
+    if (el.closest("#sierra-keys-root, #sierra-keys-toast")) return false;
+    if (!visible(el)) return false;
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 96 || rect.width > 560 || rect.height < 24 || rect.height > 640) return false;
+    const role = (el.getAttribute("role") || "").toLowerCase();
+    if (role !== "menu" && role !== "listbox" && !isFloating(el)) return false;
+    const text = norm(el.innerText || el.textContent || "");
+    if (text.length < 8 || text.length > 500) return false;
+    if (!/call via|call using|call with|call from|add to call|personal number|connected phone|connected device|\bbrowser\b/.test(text)) return false;
+    const labels = new Set();
+    for (const row of menuRows(el)) labels.add(row.label);
+    return labels.size >= 2;
+  }
+
+  function callMenus() {
+    const candidates = [];
+    for (const el of doc.querySelectorAll("ul, ol, table, div, section")) {
+      const role = (el.getAttribute("role") || "").toLowerCase();
+      const structural = el.tagName === "UL" || el.tagName === "OL" || el.tagName === "TABLE" || role === "menu" || role === "listbox" || role === "dialog";
+      if (structural || hintedPopup(el)) candidates.push(el);
+    }
+    for (const el of menuRoots) {
+      if (el && el.isConnected && el.nodeType === 1) candidates.push(el);
+    }
+    const found = [];
+    const seen = new Set();
+    for (const el of candidates) {
+      if (seen.has(el)) continue;
+      seen.add(el);
+      if (isCallMenu(el)) found.push(el);
+    }
+    return found.filter((el) => !found.some((other) => other !== el && el.contains(other)));
+  }
+
+  function callMenuLabels() {
     const labels = [];
-    for (const el of candidates(doc)) {
-      if (!visible(el)) continue;
-      if (el.closest("#sierra-keys-root, #sierra-keys-toast")) continue;
-      const name = norm(accessibleName(el));
-      if (name) labels.push(name);
+    for (const menu of callMenus()) {
+      for (const row of menuRows(menu)) labels.push(row.label);
     }
-    return labels;
+    return [...new Set(labels)];
   }
 
-  function findNamed(label) {
+  function findMenuItem(label) {
     const wanted = norm(label);
-    const matches = [];
-    for (const el of candidates(doc)) {
-      if (!visible(el)) continue;
-      if (el.closest("#sierra-keys-root, #sierra-keys-toast")) continue;
-      if (norm(accessibleName(el)) !== wanted) continue;
-      let score = 0;
-      if (el.closest("[role='menu'], [role='dialog'], nav, header")) score += 2;
-      matches.push({ el, score });
+    let best = null;
+    let bestScore = -1;
+    for (const menu of callMenus()) {
+      for (const row of menuRows(menu)) {
+        if (row.label !== wanted) continue;
+        const clickable = row.el.closest("a, button, [role='menuitem'], [role='option'], [role='button'], li, td") || row.el;
+        const target = menu.contains(clickable) ? clickable : row.el;
+        let score = 1;
+        if (target.matches("a, button, [role='menuitem'], [role='option'], [role='button']")) score += 3;
+        const rect = target.getBoundingClientRect();
+        if (rect.height > 0 && rect.height <= 72) score += 1;
+        if (score > bestScore) {
+          best = target;
+          bestScore = score;
+        }
+      }
     }
-    matches.sort((a, b) => b.score - a.score);
-    return matches[0] ? matches[0].el : null;
+    return best;
   }
 
   function waitForCallMenu() {
-    const interesting = (labels) => labels.some((label) => /call via|\bpersonal\b|connected phone|connected device/.test(label));
-    if (interesting(visibleLabels())) return Promise.resolve(visibleLabels());
+    const ready = (labels) => labels.some((label) => /call via|call using|call with|call from|\bpersonal\b|connected phone|connected device|\bbrowser\b/.test(label) || isPhoneLabel(label));
+    if (ready(callMenuLabels())) return Promise.resolve(callMenuLabels());
     return new Promise((resolve) => {
       const view = doc.defaultView;
       let done = false;
+      let frame = 0;
       const finish = () => {
         if (done) return;
         done = true;
+        if (frame) view.cancelAnimationFrame(frame);
         observer.disconnect();
         view.clearTimeout(timer);
-        resolve(visibleLabels());
+        resolve(callMenuLabels());
       };
-      const observer = new view.MutationObserver(() => {
-        if (interesting(visibleLabels())) finish();
+      const observer = new view.MutationObserver((records) => {
+        for (const record of records) {
+          for (const node of record.addedNodes) {
+            if (node.nodeType === 1) menuRoots.push(node);
+          }
+        }
+        if (frame) return;
+        frame = view.requestAnimationFrame(() => {
+          frame = 0;
+          if (ready(callMenuLabels())) finish();
+        });
       });
       observer.observe(doc.body, { childList: true, subtree: true, attributes: true });
       const timer = view.setTimeout(finish, 700);
@@ -622,30 +727,45 @@ function install(doc, storage) {
   async function openDial() {
     const row = currentRow();
     const profile = isLeadProfilePath(`${doc.defaultView.location.pathname}${doc.defaultView.location.search}`);
-    let opener = row ? findPhone(row) : null;
-    if (!opener && profile) opener = findPhone(doc.body);
-    if (!opener) {
+    menuRoots = [];
+    const openers = [];
+    const root = profile ? doc.body : row;
+    if (root) {
+      for (const el of findPhones(root)) {
+        if (!openers.includes(el)) openers.push(el);
+        if (openers.length >= 3) break;
+      }
+    }
+    if (!openers.length) {
       toast(profile || row ? "That action isn't on this page" : "Open a lead first");
       return;
     }
-    clickEl(opener);
-    let labels = await waitForCallMenu();
+    let labels = [];
+    for (const opener of openers) {
+      clickEl(opener);
+      labels = await waitForCallMenu();
+      if (labels.length) break;
+    }
+    if (!labels.length) {
+      toast("The call menu didn't open");
+      return;
+    }
     let choice = chooseCall(labels, false);
     if (choice.step === "number") {
-      const number = findNamed(choice.label);
+      const number = findMenuItem(choice.label);
       if (!number) {
-        toast(choice.reason || "Call via your phone isn't in this menu");
+        toast("Call via your phone isn't in this menu");
         return;
       }
       clickEl(number);
       labels = await waitForCallMenu();
       choice = chooseCall(labels, true);
     }
-    if (choice.step !== "dial") {
-      toast(choice.reason);
+    if (choice.step !== "dial" || /\bbrowser\b/.test(choice.label || "")) {
+      toast(choice.reason || "Call via your phone isn't in this menu");
       return;
     }
-    const dial = findNamed(choice.label);
+    const dial = findMenuItem(choice.label);
     if (!dial) {
       toast("Call via your phone isn't in this menu");
       return;
@@ -1096,9 +1216,10 @@ if (typeof process !== "undefined" && process.argv && process.argv.includes("--s
   check("plain link is not a lead", isLeadNameCandidate("/settings.aspx", "Ada Lovelace", ""), false);
   check("lead profile path", isLeadProfilePath("/lead-detail.aspx?id=1"), true);
   check("dashboard is not a profile", isLeadProfilePath("/leads.aspx"), false);
-  check("call button", phoneOpenerScore("Call", ""), 5);
-  check("phone icon", phoneOpenerScore("fa-phone", ""), 4);
-  check("profile number", phoneOpenerScore("(555) 010-0000", ""), 4);
+  check("call button", phoneOpenerScore("Call", ""), 6);
+  check("phone icon", phoneOpenerScore("fa-phone", ""), 6);
+  check("profile number", phoneOpenerScore("(555) 010-0000", ""), 2);
+  check("icon ranks above the number", phoneOpenerScore("fa-phone", "") > phoneOpenerScore("(555) 010-0000", "tel:5550100000"), true);
   check("log a call is not the dialer", phoneOpenerScore("Log a call", ""), 0);
   check("call via is the menu", phoneOpenerScore("Call via Browser", ""), 0);
   check("bulk actions label", isSheetToolbarLabel("Bulk Actions"), true);
@@ -1176,6 +1297,18 @@ if (typeof process !== "undefined" && process.argv && process.argv.includes("--s
   check("ambiguous", ambiguous.step, "none");
   const browserOnly = chooseCall(["Call via Browser", "Add to Call List"], false);
   check("browser only", browserOnly.reason, "Call via your phone isn't in this menu");
+  const usingPhone = chooseCall(["Call using Browser", "Call using (555) 010-0000"], false);
+  check("call using", `${usingPhone.step}:${usingPhone.label}`, "dial:call using (555) 010-0000");
+  const yourPhone = chooseCall(["Call via Browser", "Call via your phone"], false);
+  check("call via your phone", `${yourPhone.step}:${yourPhone.label}`, "dial:call via your phone");
+  const bareNumber = chooseCall(["Call via Browser", "(555) 010-0000", "Add to Call List"], false);
+  check("bare connected number", `${bareNumber.step}:${bareNumber.label}`, "dial:(555) 010-0000");
+  const afterPersonal = chooseCall(["Personal Number", "(555) 010-0000"], true);
+  check("number after personal", `${afterPersonal.step}:${afterPersonal.label}`, "dial:(555) 010-0000");
+  const twoBare = chooseCall(["(555) 010-0000", "(555) 010-9999"], false);
+  check("two bare numbers wait", twoBare.step, "none");
+  const toastLabel = chooseCall(["Call via your phone isn't in this menu"], false);
+  check("toast is not a phone", toastLabel.step, "none");
   if (failures.length) {
     console.error(failures.join("\n"));
     process.exit(1);
