@@ -6,7 +6,7 @@ Sierra does not ship its own shortcut map. This extension listens on the Client 
 
 Plain letters still type in fields. A chord with Alt or Ctrl still runs while a field is focused.
 
-On any Client Admin page, Shift+arrow moves a highlight to the nearest lead name in that direction. Enter, or Shift+Enter, opens that lead. In a text field that already has text, Shift+arrow still selects text. In an empty field, Shift+arrow leaves the field and moves the highlight.
+On any Client Admin page, Shift+arrow moves a highlight to the nearest stop in that direction. Stops are the menus above the lead list, such as Bulk Actions, statuses, agents, and Sort by, and the lead names in the list. Enter, or Shift+Enter, opens the highlighted control. In a text field that already has text, Shift+arrow still selects text. In an empty field, Shift+arrow leaves the field and moves the highlight.
 
 ## Shortcuts
 

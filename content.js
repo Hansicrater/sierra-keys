@@ -200,6 +200,41 @@ function isLeadNameCandidate(href, text, className) {
   return /lead-detail|leaddetail|lead_detail|lead-name|leadname/.test(hint);
 }
 
+function isSheetToolbarLabel(text) {
+  const label = norm(text);
+  if (!label || label.length > 80) return false;
+  return /\bbulk actions?\b|\bstatus(es)?\b|\bagents?\b|\bsort by\b|\bsort\b|\badvanced search\b|\bsmart filters?\b|\ball leads\b|\bfilters?\b|\blead types?\b|\btags?\b|\bponds?\b|\bcolumns?\b|\bassigned(?: to)?\b|\blead sources?\b|\bsources?\b|\bselect criteria\b|\bexport\b|\bedit smart filters\b|\bsave as smart filter\b/.test(label);
+}
+
+// A menu control above the lead names. Column headers sit in the gap
+// immediately over the names, so those count only when their label is a menu.
+// The app header counts only for those same labels, so Inbox and Leads stay out.
+function isToolbarStop(rect, text, sheetTop, inAppHeader) {
+  if (!rect || rect.width < 12 || rect.height < 12) return false;
+  if (rect.width > 520 || rect.height > 80) return false;
+  const center = rect.top + rect.height / 2;
+  if (center >= sheetTop - 2) return false;
+  const gap = sheetTop - rect.bottom;
+  if (gap > 420) return false;
+  const labeled = isSheetToolbarLabel(text);
+  if (inAppHeader) return labeled;
+  if (gap < 36 || gap > 320) return labeled;
+  return true;
+}
+
+// Shift+arrow keeps selecting text only in a text field that already has some.
+// Selects, buttons, and empty fields hand the key to the lead walk.
+function fieldBlocksWalk(target) {
+  const field = target && target.closest && target.closest("input, textarea, [contenteditable='true'], [contenteditable='']");
+  if (!field) return false;
+  if (field.matches && field.matches("input")) {
+    const type = (field.getAttribute("type") || "text").toLowerCase();
+    if (["button", "checkbox", "radio", "submit", "reset", "file", "hidden", "image", "range", "color"].includes(type)) return false;
+  }
+  if (field.matches && field.matches("input, textarea")) return field.value.trim() !== "";
+  return (field.textContent || "").replace(/\u00a0/g, " ").trim() !== "";
+}
+
 // Pick the closest lead name that actually lies in the arrow's direction.
 // A name stacked above or below does not count as left or right.
 function nearestInDirection(from, items, direction) {
@@ -572,7 +607,7 @@ function install(doc, storage) {
       <div id="sierra-keys-head">
         <div>
           <h2>Sierra shortcuts</h2>
-          <p>${admin ? "Client Admin. Shift+arrows move between lead names. Enter opens the highlighted name." : "Public site."} Letters still type in fields. Alt or Ctrl chords run.</p>
+          <p>${admin ? "Client Admin. Shift+arrows move across the menus above the lead list, then the lead names. Enter opens the highlighted control." : "Public site."} Letters still type in fields. Alt or Ctrl chords run.</p>
         </div>
         <button type="button" data-act="close">Close</button>
       </div>
@@ -606,15 +641,24 @@ function install(doc, storage) {
     return true;
   }
 
-  function fieldIsEmpty(target) {
-    const field = target && target.closest && target.closest("input, textarea, [contenteditable='true'], [contenteditable='']");
-    if (!field || field.matches("select")) return false;
-    if (field.matches("input")) {
-      const type = (field.getAttribute("type") || "text").toLowerCase();
-      if (["button", "checkbox", "radio", "submit", "reset", "file", "hidden", "image"].includes(type)) return false;
+  function ownLabel(el) {
+    let own = "";
+    for (const node of el.childNodes) {
+      if (node.nodeType === 3) own += node.nodeValue || "";
     }
-    if (field.matches("input, textarea")) return field.value.trim() === "";
-    return (field.textContent || "").replace(/\u00a0/g, " ").trim() === "";
+    own = own.replace(/\s+/g, " ").trim();
+    if (own) return own;
+    const full = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+    if (full.length <= 80 && !el.querySelector("button, a, select, input, [role='button']")) return full;
+    return "";
+  }
+
+  function isInteractiveStop(el) {
+    const tag = el.tagName;
+    if (tag === "BUTTON" || tag === "A" || tag === "SELECT" || tag === "SUMMARY" || tag === "INPUT") return true;
+    const role = (el.getAttribute("role") || "").toLowerCase();
+    if (role === "button" || role === "combobox" || role === "tab") return true;
+    return el.hasAttribute("aria-haspopup") || el.hasAttribute("aria-expanded");
   }
 
   function leadNameLinks() {
@@ -626,6 +670,51 @@ function install(doc, storage) {
       links.push(el);
     }
     return links;
+  }
+
+  function sheetToolbarControls(names) {
+    if (!names.length) return [];
+    const sheetTop = Math.min(...names.map((el) => el.getBoundingClientRect().top));
+    const nameSet = new Set(names);
+    const selector = [
+      "button",
+      "a[href]",
+      "select",
+      "summary",
+      "input[type='button']",
+      "input[type='submit']",
+      "input[type='reset']",
+      "input[type='image']",
+      "input[type='checkbox']",
+      "[role='button']",
+      "[role='combobox']",
+      "[role='tab']",
+      "[aria-haspopup]",
+      "[aria-expanded]",
+    ].join(", ");
+    const found = [];
+    const consider = (el, text) => {
+      if (!visible(el) || nameSet.has(el)) return;
+      if (el.closest("#sierra-keys-root, #sierra-keys-toast")) return;
+      const row = el.closest("tr, [role='row']");
+      if (row && names.some((name) => row.contains(name))) return;
+      const inAppHeader = !!el.closest("header, [role='banner']");
+      if (!isToolbarStop(el.getBoundingClientRect(), text, sheetTop, inAppHeader)) return;
+      found.push(el);
+    };
+    for (const el of doc.querySelectorAll(selector)) consider(el, accessibleName(el));
+    for (const el of doc.querySelectorAll("div, span, li, label, th")) {
+      if (found.some((other) => other === el || other.contains(el))) continue;
+      consider(el, ownLabel(el));
+    }
+    return found.filter((el) => {
+      for (const other of found) {
+        if (other === el) continue;
+        if (other.contains(el) && (isInteractiveStop(other) || !isInteractiveStop(el))) return false;
+        if (el.contains(other) && isInteractiveStop(other) && !isInteractiveStop(el)) return false;
+      }
+      return true;
+    });
   }
 
   function pointOf(rect) {
@@ -657,13 +746,14 @@ function install(doc, storage) {
   }
 
   function moveLeadHighlight(direction) {
-    const links = leadNameLinks();
-    if (!links.length) {
+    const names = leadNameLinks();
+    const targets = names.concat(sheetToolbarControls(names));
+    if (!targets.length) {
       toast("No lead names on this page");
       return;
     }
     const from = highlightOrigin();
-    const items = links.map((el) => {
+    const items = targets.map((el) => {
       const point = pointOf(el.getBoundingClientRect());
       return { id: el, el, ...point };
     });
@@ -706,7 +796,7 @@ function install(doc, storage) {
     const shiftArrow = admin && direction && event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey;
     if (event.repeat && !shiftArrow) return;
     if (shiftArrow && !rebindId) {
-      if (editable(event.target) && !fieldIsEmpty(event.target)) return;
+      if (fieldBlocksWalk(event.target)) return;
       event.preventDefault();
       event.stopPropagation();
       moveLeadHighlight(direction);
@@ -811,6 +901,38 @@ if (typeof process !== "undefined" && process.argv && process.argv.includes("--s
   check("lead name href", isLeadNameCandidate("lead-detail.aspx?id=1", "Ada Lovelace", ""), true);
   check("menu is not a lead", isLeadNameCandidate("lead-detail.aspx", "Leads Dashboard", "lead-name"), false);
   check("plain link is not a lead", isLeadNameCandidate("/settings.aspx", "Ada Lovelace", ""), false);
+  check("bulk actions label", isSheetToolbarLabel("Bulk Actions"), true);
+  check("sort by label", isSheetToolbarLabel("Sort by"), true);
+  check("agents label", isSheetToolbarLabel("Agents"), true);
+  check("name is not a menu", isSheetToolbarLabel("Ada Lovelace"), false);
+  check("menu above the names", isToolbarStop({ top: 80, bottom: 104, width: 120, height: 24 }, "Bulk Actions", 200), true);
+  check("column header skipped", isToolbarStop({ top: 170, bottom: 190, width: 80, height: 20 }, "Phone", 200), false);
+  check("menu close to the names", isToolbarStop({ top: 160, bottom: 184, width: 110, height: 24 }, "Sort by", 200), true);
+  check("app header link skipped", isToolbarStop({ top: 8, bottom: 32, width: 70, height: 24 }, "Inbox", 200, true), false);
+  check("labeled menu in the header", isToolbarStop({ top: 48, bottom: 76, width: 140, height: 28 }, "Bulk Actions", 200, true), true);
+  check("custom filter in the band", isToolbarStop({ top: 80, bottom: 104, width: 150, height: 24 }, "Hot Buyers Now", 200, false), true);
+  check("custom filter too far", isToolbarStop({ top: 8, bottom: 32, width: 150, height: 24 }, "Hot Buyers Now", 400, false), false);
+  check("wide bar is not one stop", isToolbarStop({ top: 80, bottom: 112, width: 800, height: 32 }, "Bulk Actions", 200, false), false);
+  const filled = {
+    value: "ada",
+    getAttribute() { return "text"; },
+    matches(sel) { return sel === "input" || sel === "input, textarea"; },
+    closest() { return filled; },
+  };
+  const empty = { ...filled, value: "  ", closest() { return empty; } };
+  const menu = { closest() { return null; } };
+  check("filled field keeps shift+arrow", fieldBlocksWalk(filled), true);
+  check("empty field walks", fieldBlocksWalk(empty), false);
+  check("menu walks", fieldBlocksWalk(menu), false);
+  const sheet = [
+    { id: "bulk", cx: 80, cy: 40 },
+    { id: "sort", cx: 400, cy: 44 },
+    { id: "ada", cx: 90, cy: 140 },
+    { id: "grace", cx: 90, cy: 180 },
+  ];
+  check("up onto the menu", nearestInDirection(sheet[2], sheet, "up").id, "bulk");
+  check("across the menu", nearestInDirection(sheet[0], sheet, "right").id, "sort");
+  check("down onto the name", nearestInDirection(sheet[0], sheet, "down").id, "ada");
   const column = [
     { id: "a", cx: 100, cy: 10 },
     { id: "b", cx: 108, cy: 40 },
