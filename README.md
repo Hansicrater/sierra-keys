@@ -19,12 +19,13 @@ On any Client Admin page, Shift+arrow moves a highlight to the nearest stop in t
 | Alt+Shift+N | Add a note |
 | Alt+Shift+T | Add a task |
 | Alt+Shift+E | Send an email |
+| Alt+Shift+X | Send a text |
 | Alt+Shift+C | Log a call |
 | Alt+Shift+P | Call via your personal number on the connected phone |
 
 Alt+Shift+D and Alt+Shift+L are left for Omarchy. Those chords start Download Video and Copy URL. The cheatsheet will not let you bind them.
 
-On a leads list, check one lead or hover its row before a note, task, email, call, or dial shortcut. Note, task, email, and log-call open the control. They do not send, save, or delete. The dial shortcut chooses Personal Number when that row is in the call menu, then Call via your connected phone. It does not choose Call via Browser. If more than one connected number is showing and none is marked personal, it does not dial.
+On a leads list, check one lead or hover its row before a note, task, email, text, call, or dial shortcut. Note, task, email, text, and log-call open the control. They do not send, save, or delete. The text shortcut opens Send Text Message from the lead's + menu, or the Text Msg button on the lead, or the Texts link on that row. The dial shortcut chooses Personal Number when that row is in the call menu, then Call via your connected phone. It does not choose Call via Browser. If more than one connected number is showing and none is marked personal, it does not dial.
 
 The script runs on `https://*.sierrainteractivedev.com/*`. On `sierrainteractive.com` the cheatsheet still opens, and a Client Admin chord says so.
 

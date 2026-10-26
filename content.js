@@ -1,6 +1,6 @@
 // Sierra's client admin has no shortcut map. Actions are found by the visible
 // labels in Sierra's own help: Leads > Leads Dashboard, Leads > Add Lead,
-// and the lead + menu (Add a note, Add a task, Send an email, Log a call).
+// and the lead + menu (Add a note, Add a task, Send an email, Send a text, Log a call).
 
 const ACTIONS = [
   { id: "help", label: "Shortcut list", chord: "Alt+Shift+Slash", site: "both" },
@@ -46,6 +46,13 @@ const ACTIONS = [
     site: "admin",
     kind: "record",
     labels: ["Send an email", "Send email"],
+  },
+  {
+    id: "text",
+    label: "Send a text",
+    chord: "Alt+Shift+KeyX",
+    site: "admin",
+    kind: "text",
   },
   {
     id: "call",
@@ -183,6 +190,21 @@ function chooseCall(labels, pickedNumber) {
   return { step: "none", reason: "Call via your phone isn't in this menu" };
 }
 
+// Sierra's own labels for opening a text. "Texts" is the phone-column link and
+// is only used on the lead's row, so a page-level Texts control is not enough.
+const TEXT_COMPOSE_LABELS = [
+  "send text message",
+  "send a text",
+  "send text",
+  "text msg",
+  "text message",
+  "send sms",
+];
+
+function isTextComposeLabel(text) {
+  return TEXT_COMPOSE_LABELS.includes(norm(text));
+}
+
 const ARROW_DIRECTIONS = {
   ArrowDown: "down",
   ArrowUp: "up",
@@ -195,7 +217,7 @@ function isLeadNameCandidate(href, text, className) {
   if (!label || label.length > 80) return false;
   if (label.includes("@")) return false;
   if (/^\+?[\d\s().-]{7,}$/.test(label)) return false;
-  if (/^(leads dashboard|manage leads|add lead|log a call|log call|add a note|add note|add a task|add task|send an email|send email|call|phone)$/.test(label)) return false;
+  if (/^(leads dashboard|manage leads|add lead|log a call|log call|add a note|add note|add a task|add task|send an email|send email|send a text|send text|send text message|text msg|text message|texts|call|phone)$/.test(label)) return false;
   const hint = `${href || ""} ${className || ""}`.toLowerCase();
   return /lead-detail|leaddetail|lead_detail|lead-name|leadname/.test(hint);
 }
@@ -561,6 +583,31 @@ function install(doc, storage) {
     clickEl(dial);
   }
 
+  async function openText() {
+    const row = currentRow();
+    const onRow = row ? findClickable(TEXT_COMPOSE_LABELS, row) : null;
+    const direct = onRow || findClickable(TEXT_COMPOSE_LABELS);
+    if (direct) {
+      clickEl(direct);
+      return;
+    }
+    const opener = findOpener(row || doc.body);
+    if (opener) {
+      clickEl(opener);
+      const el = await waitForClickable(TEXT_COMPOSE_LABELS);
+      if (el) {
+        clickEl(el);
+        return;
+      }
+    }
+    const texts = row && findClickable(["Texts"], row);
+    if (texts) {
+      clickEl(texts);
+      return;
+    }
+    toast(row || opener ? "That action isn't on this page" : "Open a lead first");
+  }
+
   function closeOverlay() {
     rebindId = null;
     const root = doc.getElementById("sierra-keys-root");
@@ -785,6 +832,7 @@ function install(doc, storage) {
     if (action.kind === "nav") return openNav(action);
     if (action.kind === "record") return openRecord(action);
     if (action.kind === "dial") return openDial();
+    if (action.kind === "text") return openText();
   }
 
   doc.addEventListener("pointermove", (event) => {
@@ -948,6 +996,11 @@ if (typeof process !== "undefined" && process.argv && process.argv.includes("--s
   check("right neighbor", nearestInDirection(sideBySide[0], sideBySide, "right").id, "b");
   check("side is not down", nearestInDirection(sideBySide[0], sideBySide, "down"), null);
   check("dial p free", rejectChord("Alt+Shift+KeyP"), null);
+  check("text chord free", rejectChord("Alt+Shift+KeyX"), null);
+  check("send text message", isTextComposeLabel("Send Text Message"), true);
+  check("text msg", isTextComposeLabel("Text Msg"), true);
+  check("email is not a text", isTextComposeLabel("Send an email"), false);
+  check("texts link is not compose", isTextComposeLabel("Texts"), false);
   const connectedOnly = chooseCall(["Call via Browser", "Call via (555) 010-0000"], false);
   check("one connected", `${connectedOnly.step}:${connectedOnly.label}`, "dial:call via (555) 010-0000");
   const pickPersonal = chooseCall(["Call via Browser", "Call via (555) 010-0000", "Personal Number"], false);
